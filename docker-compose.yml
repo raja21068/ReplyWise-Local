@@ -1,0 +1,46 @@
+version: "3.9"
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.orchestrator
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      APP_BASE_URL: http://orchestrator:3000
+      AI_PROVIDER: local
+      ENABLED_AGENTS: whatsapp,telegram
+      ALLOW_AUTOSEND: "false"
+      SCREENSHOT_ON_ERROR: "false"
+      ENABLE_LIVE_SCREENSHOTS: "false"
+      STORE_FILE: /app/data/conversationos.store.json
+    volumes:
+      - appdata:/app/data
+    restart: unless-stopped
+
+  agents:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agents
+    environment:
+      APP_BASE_URL: http://orchestrator:3000
+      ENABLED_AGENTS: whatsapp,telegram
+      SESSION_DIR: /app/data/sessions
+      SCREENSHOT_DIR: /app/data/screenshots
+      BROWSER_HEADLESS: "true"
+      SCREENSHOT_ON_ERROR: "false"
+      ENABLE_LIVE_SCREENSHOTS: "false"
+      BRIDGE_POLL_MS: 5000
+      HEALTH_CHECK_INTERVAL: 60
+    volumes:
+      - sessions:/app/data/sessions
+      - screenshots:/app/data/screenshots
+    depends_on:
+      - orchestrator
+    shm_size: "1gb"
+    restart: unless-stopped
+volumes:
+  appdata:
+  sessions:
+  screenshots:

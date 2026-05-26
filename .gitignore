@@ -1,0 +1,6 @@
+node_modules/
+data/sessions/
+data/screenshots/
+data/*.json
+.env
+*.log

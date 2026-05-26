@@ -1,0 +1,29 @@
+{
+  "name": "conversationos-local-killer-mvp",
+  "version": "3.0.0",
+  "private": true,
+  "description": "ConversationOS Local: free-cost, browser-agent message co-pilot for WhatsApp and Telegram. It tells you whether replying is a good idea before drafting replies.",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js",
+    "agents": "node src/bridge/agent-manager.js",
+    "agent:whatsapp": "ENABLED_AGENTS=whatsapp node src/bridge/agent-manager.js",
+    "agent:telegram": "ENABLED_AGENTS=telegram node src/bridge/agent-manager.js",
+    "seed": "node src/db/seed.js",
+    "reset": "node src/db/reset.js",
+    "smoke": "node scripts/smoke-test.js",
+    "syntax": "node scripts/syntax-check.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "morgan": "^1.10.0",
+    "playwright": "^1.52.0",
+    "qrcode-terminal": "^0.12.0",
+    "uuid": "^11.0.3",
+    "whatsapp-web.js": "^1.26.0"
+  }
+}
