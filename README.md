@@ -1,102 +1,569 @@
-# ConversationOS Local — Killer MVP
+# ReplyWise Local
 
 **It does not just write replies. It tells you whether replying is a good idea.**
 
-ConversationOS Local is a free-cost, local-first communication co-pilot for **WhatsApp + Telegram**.
+ReplyWise Local is a local-first communication co-pilot for WhatsApp and Telegram. It watches incoming messages through browser/session agents, analyzes the conversation context, decides whether replying is actually a good idea, generates safe reply options, and sends only after manual approval.
 
-- No official messaging API keys
-- No bot tokens
-- No cloud AI required
+The product is designed for **free-cost operation**:
+
+- No official messaging API keys by default
+- No bot tokens by default
+- No paid cloud AI required
 - No screenshot/OCR reading loop
 - Browser-session agents only
-- Manual approval before every outgoing message
-- Local JSON store by default for simple free testing
+- Local decision engine first
+- Manual approval before every send
 
-## What it does
+---
 
-Incoming message → judgment engine → decision card → reply options → manual approve/edit/wait/skip → browser agent sends through the real web UI.
+## Core Promise
 
-Decision actions:
+Most AI tools only answer this:
 
-- `yes` — reply now
-- `wait` — do not chase; wait first
-- `repair` — fix tension calmly
-- `no` — respect boundary / do not reply
-- `end` — end politely if needed
+> “What should I reply?”
 
-## Quick start
+ReplyWise Local answers the more important question first:
+
+> “Should I reply at all?”
+
+Every incoming message is analyzed for timing, tone, emotional state, energy balance, boundaries, and conversation momentum.
+
+---
+
+## MVP Channels
+
+The MVP intentionally focuses on **two channels only**:
+
+| Channel | Mode | Status |
+|---|---|---|
+| WhatsApp | `whatsapp-web.js` browser session | Primary MVP channel |
+| Telegram | Playwright browser session | Secondary MVP channel |
+
+The product does **not** try to support every platform in v0.1. Reliability matters more than channel count.
+
+---
+
+## Key Features
+
+### 1. Should-I-Reply Decision Engine
+
+Each incoming message produces a structured decision:
+
+```json
+{
+  "decision": "reply_now | wait | no_reply | repair | end",
+  "confidence": 87,
+  "reason": "They asked a warm open-ended question.",
+  "best_move": "Answer lightly and ask back.",
+  "avoid": "Do not over-flirt or write a long reply."
+}
+```
+
+### 2. Reply Options
+
+When replying is a good idea, ReplyWise generates three options:
+
+- Casual
+- Playful
+- Genuine / repair / short, depending on context
+
+Each option is designed to be natural, short, and consistent with the user's normal tone.
+
+### 3. Manual Approval Only
+
+ReplyWise never auto-sends by default.
+
+```txt
+Incoming message
+↓
+Analyze decision
+↓
+Generate reply options
+↓
+User approves, edits, waits, or skips
+↓
+Browser agent sends only after approval
+```
+
+### 4. Energy Matching
+
+The system tracks whether you are over-investing compared to the other person.
+
+Example:
+
+```txt
+Your average message length: 42 words
+Their average message length: 8 words
+Warning: you are writing 5x more.
+Best move: keep the next reply short.
+```
+
+### 5. Conversation Temperature
+
+Each contact gets a live state:
+
+```txt
+Cold
+Neutral
+Warm
+Playful
+Flirty
+Deep
+Tense
+Paused
+```
+
+Reply suggestions are adapted to this state.
+
+### 6. Anti-Cringe Filter
+
+ReplyWise avoids replies that are:
+
+- Too long
+- Too needy
+- Too poetic
+- Too fake
+- Too intense
+- Too flirty too early
+- Too AI-sounding
+
+### 7. Local Memory
+
+The system stores practical per-contact memory:
+
+```txt
+Facts:
+- exams next week
+- likes Roman Urdu
+- prefers short replies when busy
+
+Style:
+- playful
+- light emojis
+- responds well to teasing
+
+Boundaries:
+- do not pressure during exams
+- avoid heavy late-night topics
+
+Inside jokes:
+- Pepsi vs Cola
+- fear of lizards
+```
+
+### 8. Free-Cost First
+
+Default mode uses local rules and templates.
+
+Optional AI modes can be added later:
+
+| Mode | Cost | Privacy | Description |
+|---|---:|---|---|
+| Local rules | Free | Local | Default |
+| Ollama | Free after setup | Local | Optional local LLM |
+| Gemini / cloud AI | API-dependent | External | Optional user-provided key only |
+
+---
+
+## Architecture
+
+```txt
+WhatsApp / Telegram Web
+        ↓
+Browser Agent
+        ↓
+Incoming Message Ingest API
+        ↓
+Conversation Engine
+        ↓
+Should-I-Reply Decision
+        ↓
+Reply Generator
+        ↓
+Mobile Approval Dashboard
+        ↓
+Outgoing Queue
+        ↓
+Browser Agent Sends Through Web UI
+```
+
+---
+
+## Project Structure
+
+```txt
+replywise-local/
+├── src/
+│   ├── server.js
+│   ├── db/
+│   │   ├── index.js
+│   │   └── seed.js
+│   ├── ai/
+│   │   ├── index.js
+│   │   ├── local-decision-engine.js
+│   │   ├── local-template-engine.js
+│   │   └── ollama-client.js
+│   ├── safety/
+│   │   └── guardrails.js
+│   ├── bridge/
+│   │   ├── base-agent.js
+│   │   ├── whatsapp-agent.js
+│   │   ├── telegram-agent.js
+│   │   └── agent-manager.js
+│   └── ui/
+│       └── templates.js
+├── data/
+│   ├── sessions/
+│   └── screenshots/
+├── scripts/
+├── .env.example
+├── package.json
+└── README.md
+```
+
+---
+
+## Requirements
+
+- Node.js 20+
+- npm
+- A WhatsApp account for WhatsApp Web login
+- A Telegram account for Telegram Web login
+- Chromium dependencies for Playwright / Puppeteer
+
+No official WhatsApp Cloud API key is required.
+
+No Telegram Bot API token is required for the browser-agent mode.
+
+---
+
+## Quick Start
+
+### 1. Install
+
+```bash
+git clone https://github.com/YOUR_USERNAME/replywise-local.git
+cd replywise-local
+npm install
+```
+
+### 2. Configure
 
 ```bash
 cp .env.example .env
-npm install
+```
+
+Recommended free-cost settings:
+
+```env
+PORT=3000
+APP_BASE_URL=http://localhost:3000
+
+AI_PROVIDER=local
+ALLOW_AUTOSEND=false
+
+ENABLED_AGENTS=whatsapp
+BROWSER_HEADLESS=false
+
+SCREENSHOT_ON_ERROR=false
+LIVE_SCREENSHOT=false
+OCR_ENABLED=false
+
+BRIDGE_POLL_MS=5000
+HEALTH_CHECK_INTERVAL=60
+```
+
+### 3. Reset and seed database
+
+```bash
 npm run reset
 npm run seed
+```
+
+### 4. Start the dashboard
+
+```bash
 npm run dev
 ```
 
 Open:
 
-```text
+```txt
 http://localhost:3000
 ```
 
-Use the sandbox form first. Try messages like:
+### 5. Start browser agents
 
-```text
-So what's your weekend plan?
-hmm ok
-I'm really stressed about exams
-please stop, I'm not comfortable
+Run WhatsApp only:
+
+```bash
+npm run agent:whatsapp
 ```
 
-## Run browser agents
+Run Telegram only:
 
-In another terminal:
+```bash
+npm run agent:telegram
+```
+
+Run all enabled agents:
 
 ```bash
 npm run agents
 ```
 
-For lower cost, run one agent only:
+---
+
+## Recommended v0.1 Test Flow
+
+Start with one channel and one test contact.
+
+```txt
+1. Start dashboard
+2. Start WhatsApp agent
+3. Scan WhatsApp Web QR code
+4. Ask a test contact to message you
+5. Confirm the incoming message appears in dashboard
+6. Review the should-reply decision
+7. Approve or edit a reply
+8. Confirm the browser agent sends it
+9. Confirm outgoing status becomes sent
+```
+
+Success means:
+
+- Incoming message detected
+- Decision created
+- Reply options shown
+- Manual approval required
+- Outgoing message queued
+- Browser agent sends through web UI
+- No screenshot/OCR used
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3000` | Dashboard/API port |
+| `APP_BASE_URL` | `http://localhost:3000` | Orchestrator URL used by agents |
+| `AI_PROVIDER` | `local` | `local` or optional `ollama` |
+| `ALLOW_AUTOSEND` | `false` | Must stay false for safety |
+| `ENABLED_AGENTS` | `whatsapp` | Comma-separated agent list |
+| `BROWSER_HEADLESS` | `false` | Set true after login is stable |
+| `SESSION_DIR` | `./data/sessions` | Persistent browser session folder |
+| `SCREENSHOT_ON_ERROR` | `false` | Emergency debugging only |
+| `LIVE_SCREENSHOT` | `false` | Keep off in free-cost mode |
+| `OCR_ENABLED` | `false` | Keep off; not needed for normal reading |
+| `BRIDGE_POLL_MS` | `5000` | Outgoing queue polling interval |
+| `HEALTH_CHECK_INTERVAL` | `60` | Agent health interval in seconds |
+
+---
+
+## Dashboard Actions
+
+For every incoming message, the dashboard should show:
+
+```txt
+Contact · Channel
+Incoming message
+
+Decision:
+Reply now / Wait / No reply / Repair / End
+
+Why:
+Short explanation
+
+Best move:
+What to do next
+
+Avoid:
+What not to do
+
+Reply options:
+1. Casual
+2. Playful
+3. Genuine / repair
+
+Actions:
+Send
+Edit
+Wait
+Skip
+```
+
+---
+
+## Safety Principles
+
+ReplyWise is a human-in-the-loop communication assistant.
+
+It should not be used for:
+
+- Spam
+- Harassment
+- Manipulation
+- Impersonation
+- Fully autonomous messaging
+- Bypassing platform enforcement
+- Sending messages without human review
+
+Hard rules:
+
+```txt
+No auto-send by default.
+No stealth/bypass logic.
+No screenshot reading loop.
+No OCR-based message reading.
+No official API-key dependency for MVP.
+No reply after clear rejection or boundary.
+```
+
+---
+
+## Platform Risk Notice
+
+Browser automation may violate the terms of service of some platforms. Sessions can break, selectors can change, and accounts may face restrictions.
+
+Use this project for personal experimentation and local prototyping only. Prefer read-only mode during testing. Use a secondary account where appropriate.
+
+---
+
+## Why Not Many Channels?
+
+The v0.1 goal is not to support every messaging app.
+
+The v0.1 goal is:
+
+```txt
+One or two channels.
+Free-cost.
+Reliable.
+Manual approval.
+Good judgment.
+No bad replies.
+```
+
+Additional platforms can be added later after the core product is proven.
+
+---
+
+## Roadmap
+
+### v0.1 — WhatsApp Proof
+
+- WhatsApp browser/session agent
+- Local dashboard
+- Should-I-reply engine
+- Manual approval
+- Local templates
+- Energy matching
+- Anti-cringe filter
+
+### v0.2 — Telegram
+
+- Telegram Web browser agent
+- WebSocket + DOM watcher
+- Same approval flow
+- Same memory system
+
+### v0.3 — Better Intelligence
+
+- Contact-specific rules
+- Conversation temperature graph
+- Reply feedback learning
+- Repair mode
+- Do-not-reply engine improvements
+
+### v0.4 — Local Desktop App
+
+- Electron wrapper
+- Local encrypted database
+- One-command startup
+- Mobile-friendly local web UI
+
+### v0.5 — Optional Smart Mode
+
+- Ollama integration
+- User-provided Gemini key option
+- Strict budget manager
+- Local fallback when quota ends
+
+---
+
+## Development Scripts
+
+Common scripts:
 
 ```bash
+npm run dev
+npm run reset
+npm run seed
+npm run agents
 npm run agent:whatsapp
-# or
 npm run agent:telegram
+npm test
 ```
 
-## Login
+---
 
-Use:
+## Example Decision Card
 
-```env
-BROWSER_HEADLESS=false
+```txt
+Ayesha · WhatsApp
+
+"So what's your weekend plan?"
+
+Decision:
+✅ Reply now
+
+Why:
+She asked an open question and the tone is warm.
+
+Best move:
+Keep it light and ask back.
+
+Avoid:
+Do not over-flirt or write a long message.
+
+Option 1:
+"Nothing fixed yet, maybe food and rest. Tumhara kya scene hai?"
+
+Option 2:
+"Plan toh pending hai, agar koi acha idea mil gaya toh weekend bach jayega 😂"
+
+Option 3:
+"Weekend depends on company tbh 😄 tumhara kya plan?"
+
+[Send] [Edit] [Wait] [Skip]
 ```
 
-WhatsApp prints QR in the terminal. Telegram opens a browser login flow. Sessions persist inside `data/sessions/`.
+---
 
-## Free-cost rules
+## Contributing
 
-Normal operation uses:
+Contributions should follow the product principle:
 
-1. WhatsApp event listener or Telegram WebSocket/DOM watcher
-2. Local rule engine
-3. Local memory stats
-4. Manual approval
+> Reliability and judgment are more important than channel count.
 
-Screenshots are disabled by default:
+Before adding a new platform, improve:
 
-```env
-SCREENSHOT_ON_ERROR=false
-ENABLE_LIVE_SCREENSHOTS=false
-```
+- WhatsApp reliability
+- Telegram reliability
+- Decision quality
+- Local memory
+- Safety rules
+- Mobile dashboard UX
 
-Only enable screenshots temporarily for debugging.
+---
 
-## Safety promise
+## License
 
-ConversationOS Local will not auto-send. `ALLOW_AUTOSEND=true` is blocked intentionally. Approved text is queued and sent only by the browser agent after the user clicks Send.
+MIT License.
 
-## Product focus
+---
 
-This MVP intentionally supports only WhatsApp and Telegram. More channels are not the goal yet. The goal is to make 1–2 channels reliable, cheap, and useful.
+## Disclaimer
+
+ReplyWise Local is an experimental local-first assistant. It is not affiliated with WhatsApp, Telegram, Meta, or any messaging platform. Use responsibly, respect privacy, and always remain the author of your own messages.
