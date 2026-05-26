@@ -18,6 +18,7 @@ function emptyStore() {
     agent_statuses: [],
     feedback_events: [],
     cost_log: [],
+    automation_events: [],
   };
 }
 
@@ -118,6 +119,10 @@ function normalizeSuggestionRow(row) {
     stageAnalysis: row.stage_analysis,
     nextMoveHint: row.next_move_hint,
     chosenText: row.chosen_text,
+    automationJson: row.automation_json,
+    recommendedText: row.recommended_text,
+    recommendedOptionIndex: row.recommended_option_index,
+    recommendedTone: row.recommended_tone,
   };
 }
 
@@ -150,6 +155,8 @@ async function upsertContact({ channel = 'manual', externalContactId, whatsappId
       can_read: true,
       can_suggest: true,
       can_send_after_approval: true,
+      autopilot_mode: 'manual',
+      auto_send_whitelisted: false,
     },
     stats: {},
     is_tracked: true,
@@ -230,6 +237,10 @@ async function createSuggestion({ contactId, incomingMessageId, result }) {
     stats_json: result.stats || {},
     stage_analysis: result.stage_analysis || '',
     next_move_hint: result.next_move_hint || '',
+    automation_json: result.automation || {},
+    recommended_text: result.automation?.recommended_text || null,
+    recommended_option_index: result.automation?.recommended_index ?? null,
+    recommended_tone: result.automation?.recommended_tone || null,
     status: 'pending',
     chosen_text: null,
     created_at: now(),
@@ -237,8 +248,36 @@ async function createSuggestion({ contactId, incomingMessageId, result }) {
   };
   store.suggestions.push(row);
   store.cost_log.push({ id: uuidv4(), type: result.provider || 'local', cost: 0, created_at: now(), note: 'local/free suggestion generation' });
+  if (result.automation) {
+    store.automation_events.push({
+      id: uuidv4(),
+      suggestion_id: row.id,
+      contact_id: contactId,
+      event_type: result.automation.auto_send?.allowed ? 'auto_send_allowed' : result.automation.auto_choose?.allowed ? 'auto_chosen' : 'manual_required',
+      payload: result.automation,
+      created_at: now(),
+    });
+  }
   await writeStore(store);
   return normalizeSuggestionRow(row);
+}
+
+async function getSuggestionById(id) {
+  const store = await readStore();
+  const s = store.suggestions.find(x => x.id === id);
+  if (!s) return null;
+  const c = store.contacts.find(x => x.id === s.contact_id) || {};
+  const m = store.messages.find(x => x.id === s.incoming_message_id) || {};
+  return normalizeSuggestionRow({
+    ...s,
+    display_name: c.display_name,
+    channel: c.channel,
+    external_contact_id: c.external_contact_id,
+    whatsapp_id: c.whatsapp_id,
+    incoming_body: m.body,
+    contact: normalizeContactRow(c),
+    incomingMessage: normalizeMessageRow(m),
+  });
 }
 
 async function listPendingSuggestions() {
@@ -262,7 +301,7 @@ async function listPendingSuggestions() {
     });
 }
 
-async function approveSuggestion({ suggestionId, chosenText, bridge }) {
+async function approveSuggestion({ suggestionId, chosenText, bridge, source = 'manual_approval', status = 'approved' }) {
   const store = await readStore();
   const suggestion = store.suggestions.find(s => s.id === suggestionId);
   if (!suggestion) throw new Error('Suggestion not found');
@@ -272,7 +311,7 @@ async function approveSuggestion({ suggestionId, chosenText, bridge }) {
   const sendBridge = bridge || defaultBridgeForContact(contact);
   const ts = now();
 
-  suggestion.status = 'approved';
+  suggestion.status = status || 'approved';
   suggestion.chosen_text = chosenText;
   suggestion.decided_at = ts;
 
@@ -282,7 +321,7 @@ async function approveSuggestion({ suggestionId, chosenText, bridge }) {
     timestamp: ts,
     direction: 'outgoing',
     body: chosenText,
-    metadata: { source: 'manual_approval', suggestion_id: suggestionId, bridge: sendBridge },
+    metadata: { source, suggestion_id: suggestionId, bridge: sendBridge },
     created_at: ts,
   };
   store.messages.push(msg);
@@ -295,6 +334,7 @@ async function approveSuggestion({ suggestionId, chosenText, bridge }) {
     external_contact_id: contact.external_contact_id,
     body: chosenText,
     bridge: sendBridge,
+    source,
     status: process.env.DRY_RUN_SEND === 'true' ? 'dry_run' : 'pending',
     error_log: null,
     created_at: ts,
@@ -302,6 +342,7 @@ async function approveSuggestion({ suggestionId, chosenText, bridge }) {
     failed_at: null,
   };
   store.outgoing_queue.push(queue);
+  store.automation_events.push({ id: uuidv4(), suggestion_id: suggestionId, contact_id: contact.id, event_type: source, payload: { status: suggestion.status, chosenText, queueId: queue.id }, created_at: ts });
   await writeStore(store);
   return { queueId: queue.id, contact: normalizeContactRow(contact), body: chosenText, bridge: sendBridge };
 }
@@ -401,6 +442,16 @@ async function contactsNeedingRefresh(minNewMessages = 25) {
   }).map(normalizeContactRow);
 }
 
+async function updateContactRules(contactId, patch = {}) {
+  const store = await readStore();
+  const contact = store.contacts.find(c => c.id === contactId);
+  if (!contact) throw new Error('Contact not found');
+  contact.contact_rules = { ...(contact.contact_rules || {}), ...patch };
+  contact.updated_at = now();
+  await writeStore(store);
+  return normalizeContactRow(contact);
+}
+
 async function updateAgentStatus(channel, status, errorLog = null) {
   const store = await readStore();
   const ch = normalizeChannel(channel);
@@ -420,6 +471,14 @@ async function updateAgentStatus(channel, status, errorLog = null) {
 async function getAgentStatuses() {
   const store = await readStore();
   return store.agent_statuses.slice().sort((a,b)=>String(a.channel).localeCompare(String(b.channel)));
+}
+
+async function countAutoSendsToday() {
+  const store = await readStore();
+  const today = new Date().toISOString().slice(0, 10);
+  return store.outgoing_queue.filter(q =>
+    q.source === 'smart_autopilot_auto_send' && String(q.created_at || '').startsWith(today)
+  ).length;
 }
 
 async function getCostSummary() {
@@ -450,6 +509,7 @@ module.exports = {
   getRecentMessages,
   getMessagesSinceLastProfile,
   createSuggestion,
+  getSuggestionById,
   listPendingSuggestions,
   approveSuggestion,
   skipSuggestion,
@@ -462,8 +522,10 @@ module.exports = {
   setSetting,
   updateContactProfile,
   contactsNeedingRefresh,
+  updateContactRules,
   updateAgentStatus,
   getAgentStatuses,
+  countAutoSendsToday,
   getCostSummary,
   disconnect,
   readStore,

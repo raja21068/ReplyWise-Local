@@ -1,8 +1,8 @@
 {
-  "name": "conversationos-local-killer-mvp",
-  "version": "3.0.0",
+  "name": "replywise-local-smart-autopilot-mvp",
+  "version": "3.1.0",
   "private": true,
-  "description": "ConversationOS Local: free-cost, browser-agent message co-pilot for WhatsApp and Telegram. It tells you whether replying is a good idea before drafting replies.",
+  "description": "ReplyWise Local: free-cost browser-agent co-pilot for WhatsApp and Telegram with should-I-reply judgment, auto-choose, and safe auto-send autopilot.",
   "main": "src/server.js",
   "scripts": {
     "dev": "node src/server.js",

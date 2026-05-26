@@ -1,38 +1,42 @@
 # Architecture
 
-```text
-WhatsApp Web / Telegram Web
-        ↓
+```txt
 Browser Agent
-        ↓ POST /api/ingest/:channel
-Orchestrator
-        ↓
-Local judgment engine + reply engine
-        ↓
-Mobile-first dashboard card
-        ↓ manual approval
-Outgoing queue
-        ↓ polling
-Browser Agent types/sends via UI
+  - WhatsApp: whatsapp-web.js
+  - Telegram: Playwright persistent session
+      ↓
+/api/ingest/:channel
+      ↓
+Local JSON store
+      ↓
+Decision Engine
+      ↓
+Reply Generator
+      ↓
+Smart Autopilot
+      ↓
+Dashboard or auto-send queue
+      ↓
+/api/bridge/pending-outgoing
+      ↓
+Browser Agent sends through UI
 ```
 
-## Key folders
+## Smart Autopilot
 
-```text
-src/server.js                  Express orchestrator + dashboard
-src/brain/decision-engine.js   Should-you-reply judgment
-src/brain/stats-engine.js      Free local conversation stats
-src/ai/local-rule-engine.js    Free reply options
-src/bridge/whatsapp-agent.js   whatsapp-web.js browser agent
-src/bridge/telegram-agent.js   Playwright Telegram Web agent
-src/bridge/agent-manager.js    Starts and monitors enabled agents
-src/db/index.js                Local JSON store
+Implemented in `src/brain/autopilot-engine.js`.
+
+It returns:
+
+```json
+{
+  "mode": "auto_choose",
+  "recommended_text": "...",
+  "auto_send": {
+    "allowed": false,
+    "blocked_reasons": []
+  }
+}
 ```
 
-## Cost design
-
-Normal read path avoids screenshots and OCR. It relies on event/DOM/WebSocket text extraction.
-
-## Reliability design
-
-The agent manager restarts crashed agents with backoff. Re-auth page explains how to log in without screenshots by using a visible browser.
+The server stores this in each suggestion and queues an outgoing message only if auto-send is explicitly enabled and all safety checks pass.

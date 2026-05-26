@@ -25,7 +25,8 @@ async function main() {
     });
     if (!data.suggestionId) throw new Error('missing suggestionId');
     if (!data.decision || !data.decision.action) throw new Error('missing decision');
-    console.log(`✓ ${c.body} → decision=${data.decision.action}, confidence=${data.decision.confidence}`);
+    if (!data.automation || !data.automation.mode) throw new Error('missing automation');
+    console.log(`✓ ${c.body} → decision=${data.decision.action}, automation=${data.automation.mode}, autoSent=${data.autoSent}`);
   }
   const root = await fetch(`${base}/`);
   if (!root.ok) throw new Error(`dashboard failed: ${root.status}`);

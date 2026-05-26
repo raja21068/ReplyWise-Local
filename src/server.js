@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const db = require('./db');
 const ai = require('./ai');
+const { evaluateAutopilot } = require('./brain/autopilot-engine');
 const { assertHumanApproval, cleanSuggestionText, isSystemInstructionText } = require('./safety/guardrails');
 
 const app = express();
@@ -49,6 +50,9 @@ app.get('/', async (req, res, next) => {
         enabledAgents: process.env.ENABLED_AGENTS || 'whatsapp,telegram',
         screenshots: screenshotsEnabled(),
         dryRun: boolEnv('DRY_RUN_SEND', false),
+        autoChoose: boolEnv('AUTO_CHOOSE_ENABLED', true),
+        autoSend: boolEnv('AUTO_SEND_ENABLED', false),
+        autoSendWhitelistOnly: boolEnv('AUTO_SEND_WHITELIST_ONLY', true),
       },
     }));
   } catch (err) { next(err); }
@@ -68,7 +72,7 @@ app.post('/api/ingest/:channel', async (req, res, next) => {
       timestamp: req.body.timestamp,
       metadata: { source: `${req.params.channel}-browser-agent`, raw: req.body },
     });
-    res.json({ ok: true, suggestionId: result.suggestion.id, decision: result.result.decision });
+    res.json({ ok: true, suggestionId: result.suggestion.id, decision: result.result.decision, automation: result.result.automation, autoSent: result.autoSent || false });
   } catch (err) { next(err); }
 });
 
@@ -84,7 +88,7 @@ app.post('/api/sandbox/:channel/incoming', async (req, res, next) => {
       metadata: { source: `${channel}_sandbox_ui` },
     });
     if (req.accepts('html')) return res.redirect('/');
-    res.json({ ok: true, suggestionId: result.suggestion.id, decision: result.result.decision });
+    res.json({ ok: true, suggestionId: result.suggestion.id, decision: result.result.decision, automation: result.result.automation, autoSent: result.autoSent || false });
   } catch (err) { next(err); }
 });
 
@@ -104,6 +108,25 @@ app.post('/api/suggestions/:id/approve', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+app.post('/api/suggestions/:id/send-auto-choice', async (req, res, next) => {
+  try {
+    assertHumanApproval();
+    const suggestion = await db.getSuggestionById(req.params.id);
+    const chosenText = cleanSuggestionText(suggestion?.recommendedText || suggestion?.recommended_text);
+    if (!chosenText) throw new Error('No auto-chosen reply is available for this suggestion.');
+    if (isSystemInstructionText(chosenText)) throw new Error('Auto-chosen item is an instruction, not a sendable message.');
+    await db.approveSuggestion({
+      suggestionId: req.params.id,
+      chosenText,
+      bridge: req.body.bridge,
+      source: 'manual_send_auto_choice',
+      status: 'approved',
+    });
+    if (req.accepts('html')) return res.redirect('/');
+    res.json({ ok: true, chosenText });
+  } catch (err) { next(err); }
+});
+
 app.post('/api/suggestions/:id/wait', async (req, res, next) => {
   try {
     await db.waitSuggestion(req.params.id, Number(req.body.waitMinutes || 30));
@@ -115,6 +138,20 @@ app.post('/api/suggestions/:id/wait', async (req, res, next) => {
 app.post('/api/suggestions/:id/skip', async (req, res, next) => {
   try {
     await db.skipSuggestion(req.params.id);
+    if (req.accepts('html')) return res.redirect('/');
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+app.post('/api/contacts/:id/autopilot', async (req, res, next) => {
+  try {
+    const mode = ['manual', 'auto_choose', 'auto_send_safe'].includes(req.body.autopilotMode)
+      ? req.body.autopilotMode
+      : 'manual';
+    await db.updateContactRules(req.params.id, {
+      autopilot_mode: mode,
+      auto_send_whitelisted: req.body.autoSendWhitelisted === 'on' || req.body.autoSendWhitelisted === true,
+    });
     if (req.accepts('html')) return res.redirect('/');
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -204,8 +241,23 @@ async function processIncomingMessage({ channel, externalContactId, displayName,
   const recentMessages = await db.getRecentMessages(contact.id, Number(process.env.MAX_RECENT_MESSAGES || 30));
   const userPersona = await db.getSetting('user_persona');
   const result = await ai.generateSuggestions({ contact, recentMessages, incomingMessage: incoming, userPersona });
+  const autoSendsToday = await db.countAutoSendsToday();
+  result.automation = evaluateAutopilot({ contact, decision: result.decision, stats: result.stats, options: result.options, incomingMessage: incoming, recentMessages, autoSendsToday });
+
   const suggestion = await db.createSuggestion({ contactId: contact.id, incomingMessageId: incoming.id, result });
-  return { contact, incoming, suggestion, result };
+
+  let autoSent = false;
+  if (result.automation?.auto_send?.allowed && result.automation.recommended_text) {
+    await db.approveSuggestion({
+      suggestionId: suggestion.id,
+      chosenText: result.automation.recommended_text,
+      source: 'smart_autopilot_auto_send',
+      status: 'auto_sent',
+    });
+    autoSent = true;
+  }
+
+  return { contact, incoming, suggestion, result, autoSent };
 }
 
 function parseTimestamp(value) {
@@ -262,13 +314,18 @@ function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentSta
 
   const suggestionCards = (pendingSuggestions || []).map(renderSuggestionCard).join('') || '<div class="empty">No pending decisions. Send a sandbox message below.</div>';
 
-  const contactRows = (contacts || []).slice(0, 12).map(c => `
-    <tr><td>${esc(c.channel)}</td><td>${esc(c.displayName || c.display_name || c.externalContactId)}</td><td>${esc(c.conversationStage || c.conversation_stage || 'initial')}</td><td>${esc(c.message_count || 0)}</td></tr>`).join('');
+  const contactRows = (contacts || []).slice(0, 12).map(c => {
+    const rules = c.contactRules || c.contact_rules || {};
+    const mode = rules.autopilot_mode || 'manual';
+    const checked = rules.auto_send_whitelisted ? 'checked' : '';
+    return `
+    <tr><td>${esc(c.channel)}</td><td>${esc(c.displayName || c.display_name || c.externalContactId)}</td><td>${esc(c.conversationStage || c.conversation_stage || 'initial')}</td><td>${esc(c.message_count || 0)}</td><td><form method="POST" action="/api/contacts/${esc(c.id)}/autopilot"><select name="autopilotMode"><option value="manual" ${mode === 'manual' ? 'selected' : ''}>manual</option><option value="auto_choose" ${mode === 'auto_choose' ? 'selected' : ''}>auto-choose</option><option value="auto_send_safe" ${mode === 'auto_send_safe' ? 'selected' : ''}>auto-send safe</option></select><label class="muted"><input type="checkbox" name="autoSendWhitelisted" ${checked}> whitelist</label><button class="ghost" type="submit">Save</button></form></td></tr>`;
+  }).join('');
 
   const queueRows = (outgoingQueue || []).slice(0, 8).map(q => `
     <tr><td>${esc(q.channel)}</td><td>${esc(q.status)}</td><td>${esc(q.body).slice(0, 70)}</td></tr>`).join('');
 
-  return `<!DOCTYPE html><html><head><title>ConversationOS Local</title>
+  return `<!DOCTYPE html><html><head><title>ReplyWise Local</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root{--bg:#f7f4ed;--card:#fff;--text:#1f2937;--muted:#6b7280;--line:#e5e7eb;--brand:#111827;--green:#DCFCE7;--yellow:#FEF3C7;--red:#FEE2E2;--blue:#DBEAFE}
@@ -283,15 +340,15 @@ function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentSta
   section{margin:18px 0} h3{margin:0 0 8px} table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden}td,th{padding:9px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}th{background:#f3f4f6}.sandbox input,.sandbox select{border:1px solid var(--line);border-radius:10px;padding:10px;margin:4px 0;width:100%}.empty{padding:18px;border:1px dashed #bbb;border-radius:16px;text-align:center;color:var(--muted)}
   @media (max-width:720px){.grid{grid-template-columns:1fr}.hero h1{font-size:26px}.custom{flex-direction:column}.option-top{align-items:flex-start;flex-direction:column}}
 </style></head><body><div class="wrap">
-  <div class="hero"><h1>ConversationOS Local</h1><p class="tagline">It does not just write replies. It tells you whether replying is a good idea.</p><p>Free-cost mode · AI: ${esc(env.aiProvider)} · Agents: ${esc(env.enabledAgents)} · Screenshots: ${env.screenshots ? 'debug only' : 'off'} · Dry run: ${env.dryRun ? 'on' : 'off'}</p></div>
+  <div class="hero"><h1>ReplyWise Local</h1><p class="tagline">It does not just write replies. It tells you whether replying is a good idea.</p><p>Free-cost mode · AI: ${esc(env.aiProvider)} · Agents: ${esc(env.enabledAgents)} · Screenshots: ${env.screenshots ? 'debug only' : 'off'} · Auto-choose: ${env.autoChoose ? 'on' : 'off'} · Auto-send: ${env.autoSend ? 'on' : 'off'} · Dry run: ${env.dryRun ? 'on' : 'off'}</p></div>
 
-  <section class="grid">${agentCards}<div class="mini-card"><strong>💸 Cost today</strong><br><span>$${Number(costSummary.estimatedCostUsd || 0).toFixed(2)}</span><p class="muted">Local actions: ${esc(costSummary.localActions)} · Screenshots: 0 · Cloud AI: 0</p></div><div class="mini-card"><strong>🔒 Safety</strong><br><span>Manual approval only</span><p class="muted">No auto-send. No official messaging API keys.</p></div></section>
+  <section class="grid">${agentCards}<div class="mini-card"><strong>💸 Cost today</strong><br><span>$${Number(costSummary.estimatedCostUsd || 0).toFixed(2)}</span><p class="muted">Local actions: ${esc(costSummary.localActions)} · Screenshots: 0 · Cloud AI: 0</p></div><div class="mini-card"><strong>🧠 Smart Autopilot</strong><br><span>${env.autoSend ? 'Safe auto-send enabled' : env.autoChoose ? 'Auto-choose only' : 'Manual'}</span><p class="muted">Risky messages always require review. Official messaging API keys: none.</p></div></section>
 
   <section><h3>Pending Decisions</h3>${suggestionCards}</section>
 
   <section><h3>Sandbox Test</h3><div class="card sandbox"><form method="POST" action="/api/sandbox/whatsapp/incoming"><select name="channel" onchange="this.form.action='/api/sandbox/'+this.value+'/incoming'"><option>whatsapp</option><option>telegram</option></select><input name="externalContactId" placeholder="contact_id e.g. tg_ayesha" required><input name="displayName" placeholder="Display name"><input name="body" placeholder="Incoming message" required><button type="submit">Analyze Message</button></form></div></section>
 
-  <section><h3>Contacts</h3><table><tr><th>Channel</th><th>Name</th><th>Stage</th><th>Msgs</th></tr>${contactRows || '<tr><td colspan="4">No contacts yet</td></tr>'}</table></section>
+  <section><h3>Contacts</h3><table><tr><th>Channel</th><th>Name</th><th>Stage</th><th>Msgs</th><th>Autopilot</th></tr>${contactRows || '<tr><td colspan="5">No contacts yet</td></tr>'}</table></section>
 
   <section><h3>Outgoing Queue</h3><table><tr><th>Channel</th><th>Status</th><th>Body</th></tr>${queueRows || '<tr><td colspan="3">No outgoing messages</td></tr>'}</table></section>
 
@@ -303,17 +360,19 @@ function renderSuggestionCard(s) {
   const options = safeJson(s.optionsJson, []);
   const decision = safeJson(s.decisionJson, {});
   const stats = safeJson(s.statsJson, {});
+  const automation = safeJson(s.automationJson || s.automation_json, {});
   const incomingBody = s.incomingMessage?.body || s.incoming_body || '';
   const contactName = s.contact?.displayName || s.display_name || 'Unknown';
   const ch = s.contact?.channel || s.channel || '';
   const action = decision.action || decision.should_reply || 'yes';
   const actionLabel = action === 'yes' ? '✅ Reply now' : action === 'wait' ? '⏳ Wait' : action === 'repair' ? '🔧 Repair' : action === 'no' ? '❌ Do not reply' : '🚪 End politely';
   const decisionClass = ['yes','wait','repair','no','end'].includes(action) ? action : 'yes';
-  const optionBlocks = options.map((opt) => {
+  const optionBlocks = options.map((opt, idx) => {
     const text = opt.text || '';
     const systemInstruction = isSystemInstructionText(text) || opt.action === 'wait' || opt.action === 'skip';
     const sendButton = systemInstruction ? '' : `<form method="POST" action="/api/suggestions/${esc(s.id)}/approve"><input type="hidden" name="chosenText" value="${esc(text)}"><button type="submit">Send</button></form>`;
-    return `<div class="option"><div class="option-top"><strong>${esc(opt.tone || 'reply')}</strong><span class="score risk-${esc(opt.risk || 'low')}">${esc(opt.score || 75)}/100 · ${esc(opt.risk || 'low')}</span></div><p>${esc(text)}</p><p class="muted">Why: ${esc(opt.rationale || '')}</p><div class="actions">${sendButton}</div></div>`;
+    const chosen = Number(automation.recommended_index) === idx ? '<span class="pill yes">Auto-chosen</span>' : '';
+    return `<div class="option"><div class="option-top"><strong>${esc(opt.tone || 'reply')} ${chosen}</strong><span class="score risk-${esc(opt.risk || 'low')}">${esc(opt.score || 75)}/100 · ${esc(opt.risk || 'low')}</span></div><p>${esc(text)}</p><p class="muted">Why: ${esc(opt.rationale || '')}</p><div class="actions">${sendButton}</div></div>`;
   }).join('');
 
   return `<div class="card">
@@ -321,6 +380,7 @@ function renderSuggestionCard(s) {
     <div class="message">${esc(incomingBody)}</div>
     <div class="decision ${decisionClass}"><h2>${esc(actionLabel)}</h2><p><strong>Why:</strong> ${esc(decision.reason || 'Analyze and match energy.')}</p><p><strong>Best move:</strong> ${esc(decision.best_move || s.nextMoveHint || '')}</p><p><strong>Avoid:</strong> ${esc(decision.avoid || 'Avoid over-investing.')}</p></div>
     <div class="metric"><span class="pill">Your/her energy: ${esc(stats.energyRatio || '1')}x</span><span class="pill">Warmth: ${esc(stats.warmthScore || 50)}/100</span><span class="pill">Avg her words: ${esc(stats.incomingAvgWords || 0)}</span><span class="pill">Avg your words: ${esc(stats.outgoingAvgWords || 0)}</span></div>
+    <div class="mini-card"><strong>🤖 Smart Autopilot:</strong> ${esc(automation.mode || 'manual')} ${automation.auto_send?.allowed ? '· ✅ auto-send allowed' : '· manual review'}<br><span class="muted">Recommended: ${esc(automation.recommended_tone || 'none')}${automation.auto_send?.blocked_reasons?.length ? ' · Blocked: ' + esc(automation.auto_send.blocked_reasons.slice(0, 2).join('; ')) : ''}</span>${automation.recommended_text ? `<form method="POST" action="/api/suggestions/${esc(s.id)}/send-auto-choice" style="margin-top:8px"><button type="submit">Send Auto-Chosen</button></form>` : ''}</div>
     ${optionBlocks}
     <div class="actions">
       <form method="POST" action="/api/suggestions/${esc(s.id)}/wait"><input type="hidden" name="waitMinutes" value="${esc(decision.wait_minutes || 30)}"><button class="secondary" type="submit">Wait ${esc(decision.wait_minutes || 30)}m</button></form>
