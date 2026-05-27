@@ -183,6 +183,18 @@ class WhatsAppAgent extends EventEmitter {
           }
         }
 
+        const chat = await msg.getChat().catch(() => null);
+        const myJid = this.client?.info?.wid?._serialized || this.client?.info?.wid?.user || null;
+        const mentionedIds = Array.isArray(msg.mentionedIds) ? msg.mentionedIds : [];
+        const mentionedMe = Boolean(myJid && mentionedIds.some(id => String(id).includes(String(myJid).replace('@c.us', ''))));
+        let quotedFromMe = false;
+        if (msg.hasQuotedMsg) {
+          try {
+            const quoted = await msg.getQuotedMessage();
+            quotedFromMe = Boolean(quoted?.fromMe);
+          } catch { /* ignore */ }
+        }
+
         await axios.post(`${this.orchestratorUrl}/api/ingest/whatsapp`, {
           from: msg.from,
           externalContactId: msg.from,
@@ -197,7 +209,9 @@ class WhatsAppAgent extends EventEmitter {
           is_forwarded: msg.isForwarded || false,
           is_starred: msg.isStarred || false,
           author: msg.author || null,       // group chats: who sent it
-          is_group: (await msg.getChat().catch(() => null))?.isGroup || false,
+          is_group: chat?.isGroup || false,
+          mentioned_me: mentionedMe,
+          reply_to_me: quotedFromMe,
         }, { timeout: 15000 });
 
       } catch (err) {

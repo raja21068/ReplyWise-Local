@@ -173,6 +173,7 @@ async function upsertContact({ channel = 'manual', externalContactId, whatsappId
       auto_reply_enabled: false,
       reply_delay_mode: 'normal',        // 'instant' | 'normal' | 'random'
       reply_delay_seconds: 0,            // used when reply_delay_mode='instant' or 'normal'
+      custom_persona: '',                 // optional per-contact persona override
     },
     stats: {},
     is_tracked: true,

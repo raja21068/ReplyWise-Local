@@ -8,12 +8,21 @@ function generateSuggestionsLocal({ contact, recentMessages, incomingMessage, us
   const body = incomingMessage.body || '';
   const lower = body.toLowerCase();
   const style = deriveContactStyle(contact, stats, body);
+  const isGroup = Boolean(incomingMessage?.is_group);
+  if (isGroup) {
+    style.group = true;
+    style.flirtAllowed = false;
+    style.length = 'short';
+    if (style.tone !== 'mature') style.tone = 'direct';
+  }
   const language = style.language;
   const emoji = style.emoji;
 
   let options = [];
 
-  if (decision.action === 'no') {
+  if (isGroup && decision.action === 'yes') {
+    options = groupOptions(language, style, stats);
+  } else if (decision.action === 'no') {
     options = boundaryOptions(language, style);
   } else if (decision.action === 'repair') {
     options = repairOptions(language, style);
@@ -103,6 +112,23 @@ function isEnglish(language) {
 }
 
 // ── Option generators ──────────────────────────────────────
+
+
+function groupOptions(language, style = {}, stats = {}) {
+  const english = isEnglish(language) || style.tone === 'mature';
+  if (english) {
+    return [
+      { tone: 'group/short', text: `Good point. I think we can keep it simple.`, rationale: 'Short, neutral, and group-safe.', score: 91, risk: 'low' },
+      { tone: 'group/helpful', text: `Makes sense. What do you all think?`, rationale: 'Keeps the group conversation open without over-personalizing.', score: 88, risk: 'low' },
+      { tone: 'group/direct', text: `I can help with that if needed.`, rationale: 'Useful and non-flirty.', score: 84, risk: 'low' },
+    ];
+  }
+  return [
+    { tone: 'group/short', text: `Haan makes sense. Simple rakhte hain.`, rationale: 'Short, neutral, and group-safe.', score: 91, risk: 'low' },
+    { tone: 'group/helpful', text: `Theek hai, baaki sab kya soch rahe hain?`, rationale: 'Keeps group conversation open.', score: 88, risk: 'low' },
+    { tone: 'group/direct', text: `Need ho toh main help kar deta hoon.`, rationale: 'Helpful and non-flirty.', score: 84, risk: 'low' },
+  ];
+}
 
 function weekendOptions(language, emoji, stats, style = {}) {
   const keepShort = stats.overInvesting || style.length === 'short';
@@ -327,6 +353,7 @@ function scoreOptionForContext(opt, decision, stats, style = {}) {
   if (decision.risk_level === 'high' && opt.risk !== 'low') score -= 20;
   if (style.tone && String(opt.tone || '').includes(style.tone)) score += 3;
   if (style.length === 'short' && String(opt.text || '').split(/\s+/).length <= 8) score += 4;
+  if (style.group && /flirt|romantic|company|date/i.test(`${opt.tone || ''} ${opt.text || ''}`)) score -= 40;
   return { ...opt, score: Math.max(30, Math.min(99, Math.round(score))) };
 }
 

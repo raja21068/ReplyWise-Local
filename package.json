@@ -1,8 +1,8 @@
 {
   "name": "replywise-local-smart-autopilot-mvp",
-  "version": "6.0.1",
+  "version": "7.0.0",
   "private": true,
-  "description": "ReplyWise Local: free-cost browser-agent co-pilot for WhatsApp and Telegram with per-contact memory, should-I-reply decision engine, and smart autopilot.",
+  "description": "ReplyWise Local: free-cost browser-agent co-pilot with per-contact memory, group safety, voice transcription hooks, should-I-reply engine, and smart autopilot.",
   "main": "src/server.js",
   "scripts": {
     "dev": "node src/server.js",
@@ -16,7 +16,8 @@
     "syntax": "node scripts/syntax-check.js",
     "agent:wechat": "ENABLED_AGENTS=wechat node src/bridge/agent-manager.js",
     "agent:all": "ENABLED_AGENTS=whatsapp,telegram,wechat node src/bridge/agent-manager.js",
-    "style-test": "node scripts/per-contact-style-test.js"
+    "style-test": "node scripts/per-contact-style-test.js",
+    "v7-test": "node scripts/v7-feature-test.js"
   },
   "dependencies": {
     "axios": "^1.7.9",

@@ -15,6 +15,7 @@ const { callTools } = require('./ai/tool-caller');
 const bus               = require('./realtime/event-bus');
 const preferenceLearner = require('./learning/preference-learner');
 const scheduler         = require('./schedule/scheduler');
+const transcribe        = require('./media/transcribe');
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -80,6 +81,13 @@ app.post('/api/ingest/:channel', async (req, res, next) => {
       timestamp: req.body.timestamp,
       media_type: req.body.media_type,
       media_summary: req.body.media_summary,
+      is_group: req.body.is_group || false,
+      author: req.body.author || null,
+      mentioned_me: req.body.mentioned_me || req.body.mentions_me || false,
+      reply_to_me: req.body.reply_to_me || req.body.quoted_from_me || false,
+      is_forwarded: req.body.is_forwarded || false,
+      is_starred: req.body.is_starred || false,
+      local_media_path: req.body.local_media_path || null,
       metadata: { source: `${req.params.channel}-browser-agent`, raw: req.body },
     });
     res.json({ ok: true, suggestionId: result.suggestion.id, decision: result.result.decision, automation: result.result.automation, autoSent: result.autoSent || false });
@@ -95,6 +103,12 @@ app.post('/api/sandbox/:channel/incoming', async (req, res, next) => {
       externalContactId: req.body.externalContactId || req.body.contactId,
       displayName: req.body.displayName,
       body: req.body.body,
+      media_type: req.body.media_type,
+      media_summary: req.body.media_summary,
+      is_group: req.body.is_group || false,
+      author: req.body.author || null,
+      mentioned_me: req.body.mentioned_me || false,
+      reply_to_me: req.body.reply_to_me || false,
       metadata: { source: `${channel}_sandbox_ui` },
     });
     if (req.accepts('html')) return res.redirect('/');
@@ -184,6 +198,15 @@ app.post('/api/contacts/:id/autopilot', async (req, res, next) => {
     });
     if (req.accepts('html')) return res.redirect('/');
     res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+app.post('/api/contacts/:id/persona', async (req, res, next) => {
+  try {
+    const customPersona = String(req.body.customPersona || '').trim().slice(0, 2000);
+    await db.updateContactRules(req.params.id, { custom_persona: customPersona });
+    if (req.accepts('html')) return res.redirect('/');
+    res.json({ ok: true, custom_persona: customPersona });
   } catch (err) { next(err); }
 });
 
@@ -434,24 +457,62 @@ app.post('/api/plugins/:name/run', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-async function processIncomingMessage({ channel, externalContactId, displayName, body, timestamp, metadata, media_type, media_summary }) {
+async function processIncomingMessage({
+  channel, externalContactId, displayName, body, timestamp, metadata,
+  media_type, media_summary,
+  is_group = false, author = null, mentioned_me = false, reply_to_me = false,
+  is_forwarded = false, is_starred = false, local_media_path = null,
+}) {
   const normalizedChannel = db.assertSupportedChannel(channel);
-  if (!body || !String(body).trim()) throw new Error('body is required');
-  if (String(body).length > 4000) throw new Error('body too long');
   if (!externalContactId) throw new Error('externalContactId is required');
+
+  let workingBody = String(body || '').trim();
+  let transcript = null;
+  const normalizedMediaType = media_type || 'text';
+
+  if (normalizedMediaType === 'audio' && local_media_path) {
+    try {
+      const result = await transcribe.transcribe(local_media_path);
+      if (result?.text) {
+        transcript = result;
+        workingBody = result.text;
+        console.log(`[transcribe] ${result.backend}${result.cached ? ' (cached)' : ''}: "${result.text.slice(0, 80)}"`);
+      }
+    } catch (err) {
+      console.warn('[transcribe] error:', err.message);
+    }
+  }
+
+  if (!workingBody) workingBody = normalizedMediaType !== 'text' ? `[${normalizedMediaType}]` : '';
+  if (!workingBody) throw new Error('body is required');
+  if (workingBody.length > 4000) throw new Error('body too long');
 
   const contact = await db.upsertContact({ channel: normalizedChannel, externalContactId: String(externalContactId).trim(), displayName });
   const incoming = await db.insertMessage({
     contactId: contact.id,
     direction: 'incoming',
-    body: String(body).trim(),
+    body: workingBody,
     timestamp: parseTimestamp(timestamp),
-    metadata: { channel: normalizedChannel, ...metadata },
-    media_type: media_type || 'text',
+    metadata: {
+      channel: normalizedChannel,
+      is_group: Boolean(is_group),
+      author,
+      mentioned_me: Boolean(mentioned_me),
+      reply_to_me: Boolean(reply_to_me),
+      is_forwarded: Boolean(is_forwarded),
+      is_starred: Boolean(is_starred),
+      original_body: workingBody !== String(body || '').trim() ? String(body || '').trim() : undefined,
+      transcript: transcript ? { backend: transcript.backend, cached: transcript.cached } : undefined,
+      ...metadata,
+    },
+    media_type: normalizedMediaType,
     media_summary: media_summary || null,
   });
   const recentMessages = await db.getRecentMessages(contact.id, Number(process.env.MAX_RECENT_MESSAGES || 30));
-  const userPersona = await db.getSetting('user_persona');
+
+  const globalPersona = await db.getSetting('user_persona');
+  const contactPersona = (contact.contactRules || contact.contact_rules || {}).custom_persona;
+  const userPersona = (contactPersona && contactPersona.trim()) ? contactPersona : globalPersona;
 
   // ── Index this message in the RAG memory store ──────────────
   // Fire-and-forget: non-blocking, safe to run before suggestion generation
@@ -490,6 +551,13 @@ async function processIncomingMessage({ channel, externalContactId, displayName,
     _toolContext:  toolResult.contextBlock || null,
     _toolHtml:     toolResult.dashboardHtml || null,
     _preferenceBlock: preferenceProfile.promptBlock || null,
+    is_group: Boolean(is_group),
+    author,
+    mentioned_me: Boolean(mentioned_me),
+    reply_to_me: Boolean(reply_to_me),
+    is_forwarded: Boolean(is_forwarded),
+    _transcript: transcript,
+    _userDisplayName: process.env.USER_DISPLAY_NAME || extractFirstName(globalPersona),
   };
 
   const result = await ai.generateSuggestions({ contact, recentMessages, incomingMessage: enrichedIncoming, userPersona });
@@ -535,7 +603,7 @@ async function processIncomingMessage({ channel, externalContactId, displayName,
     contactId:      contact.id,
     contactName:    contact.displayName || contact.display_name || externalContactId,
     channel:        normalizedChannel,
-    incomingBody:   String(body).slice(0, 200),
+    incomingBody:   String(workingBody).slice(0, 200),
     decisionAction: result.decision?.action || 'yes',
     confidence:     result.decision?.confidence || 70,
     autoSent,
@@ -544,6 +612,20 @@ async function processIncomingMessage({ channel, externalContactId, displayName,
   });
 
   return { contact, incoming, suggestion, result, autoSent };
+}
+
+function extractFirstName(persona) {
+  if (!persona) return null;
+  const patterns = [
+    /(?:my name is|i'?m called|i am called|call me)\s+([A-Z][a-z]+)/i,
+    /i'?m\s+([A-Z][a-z]+)(?:[,\.\s]|$)/i,
+    /i am\s+([A-Z][a-z]+)(?:[,\.\s]|$)/i,
+  ];
+  for (const p of patterns) {
+    const m = String(persona).match(p);
+    if (m && m[1]) return m[1];
+  }
+  return null;
 }
 
 function parseTimestamp(value) {
@@ -616,6 +698,12 @@ function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentSta
       <td>${esc(c.conversationStage || c.conversation_stage || 'initial')}</td>
       <td>${esc(c.message_count || 0)}</td>
       <td>
+        <form method="POST" action="/api/contacts/${esc(c.id)}/persona" style="display:block;min-width:210px">
+          <textarea name="customPersona" rows="2" placeholder="Custom persona for this contact..." style="width:100%;border:1px solid var(--line);border-radius:8px;padding:6px;font-size:12px">${esc(rules.custom_persona || '')}</textarea>
+          <button class="ghost" type="submit" style="font-size:11px;margin-top:4px">Save persona</button>
+        </form>
+      </td>
+      <td>
         <form method="POST" action="/api/contacts/${esc(c.id)}/autopilot" style="display:inline">
           <select name="autopilotMode" title="Decision mode">
             <option value="manual" ${mode === 'manual' ? 'selected' : ''}>manual</option>
@@ -661,7 +749,7 @@ function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentSta
   .option{border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0;background:#fff}.option-top{display:flex;justify-content:space-between;gap:8px;align-items:center}.score{font-weight:900}.risk-low{color:#15803d}.risk-medium{color:#b45309}.risk-high{color:#b91c1c}
   button{border:0;border-radius:10px;padding:10px 13px;font-weight:800;cursor:pointer;background:#111827;color:white}.secondary{background:#e5e7eb;color:#111827}.danger{background:#fee2e2;color:#991b1b}.ghost{background:transparent;color:#111827;border:1px solid var(--line)}
   form{display:inline}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.custom{display:flex;gap:8px;margin-top:8px}.custom input{flex:1;border:1px solid var(--line);border-radius:10px;padding:11px}
-  section{margin:18px 0} h3{margin:0 0 8px} table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden}td,th{padding:9px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}th{background:#f3f4f6}.sandbox input,.sandbox select{border:1px solid var(--line);border-radius:10px;padding:10px;margin:4px 0;width:100%}.empty{padding:18px;border:1px dashed #bbb;border-radius:16px;text-align:center;color:var(--muted)}
+  section{margin:18px 0} h3{margin:0 0 8px} table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden}td,th{padding:9px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}th{background:#f3f4f6}textarea{font-family:inherit}.sandbox input,.sandbox select{border:1px solid var(--line);border-radius:10px;padding:10px;margin:4px 0;width:100%}.empty{padding:18px;border:1px dashed #bbb;border-radius:16px;text-align:center;color:var(--muted)}
   @media (max-width:720px){.grid{grid-template-columns:1fr}.hero h1{font-size:26px}.custom{flex-direction:column}.option-top{align-items:flex-start;flex-direction:column}}
 </style></head><body><div class="wrap">
   <div class="hero"><h1>ReplyWise Local</h1><p class="tagline">It does not just write replies. It tells you whether replying is a good idea.</p><p>Free-cost mode · AI: ${esc(env.aiProvider)} · Agents: ${esc(env.enabledAgents)} · Screenshots: ${env.screenshots ? 'debug only' : 'off'} · Auto-choose: ${env.autoChoose ? 'on' : 'off'} · Auto-send: ${env.autoSend ? 'on' : 'off'} · Dry run: ${env.dryRun ? 'on' : 'off'}</p></div>
@@ -670,9 +758,9 @@ function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentSta
 
   <section><h3>Pending Decisions <span id="live-indicator" class="muted" style="font-size:11px;font-weight:normal">⚪ connecting…</span></h3>${suggestionCards}</section>
 
-  <section><h3>Sandbox Test</h3><div class="card sandbox"><form method="POST" action="/api/sandbox/whatsapp/incoming"><select name="channel" onchange="this.form.action='/api/sandbox/'+this.value+'/incoming'"><option>whatsapp</option><option>telegram</option></select><input name="externalContactId" placeholder="contact_id e.g. tg_ayesha" required><input name="displayName" placeholder="Display name"><input name="body" placeholder="Incoming message" required><button type="submit">Analyze Message</button></form></div></section>
+  <section><h3>Sandbox Test</h3><div class="card sandbox"><form method="POST" action="/api/sandbox/whatsapp/incoming"><select name="channel" onchange="this.form.action='/api/sandbox/'+this.value+'/incoming'"><option>whatsapp</option><option>telegram</option><option>wechat</option></select><input name="externalContactId" placeholder="contact_id e.g. tg_ayesha" required><input name="displayName" placeholder="Display name"><input name="body" placeholder="Incoming message" required><label class="muted"><input type="checkbox" name="is_group" value="true"> group chat</label><label class="muted"><input type="checkbox" name="mentioned_me" value="true"> mentioned me</label><button type="submit">Analyze Message</button></form></div></section>
 
-  <section><h3>Contacts</h3><table><tr><th>Channel</th><th>Name</th><th>Stage</th><th>Msgs</th><th>Autopilot</th><th title="Per-chat auto-reply">🤖</th><th title="Reply delay">Delay</th></tr>${contactRows || '<tr><td colspan="7">No contacts yet</td></tr>'}</table></section>
+  <section><h3>Contacts</h3><table><tr><th>Channel</th><th>Name</th><th>Stage</th><th>Msgs</th><th>Custom Persona</th><th>Autopilot</th><th title="Per-chat auto-reply">🤖</th><th title="Reply delay">Delay</th></tr>${contactRows || '<tr><td colspan="8">No contacts yet</td></tr>'}</table></section>
 
   <section><h3>Outgoing Queue</h3><table><tr><th>Channel</th><th>Status</th><th>Body</th></tr>${queueRows || '<tr><td colspan="3">No outgoing messages</td></tr>'}</table></section>
 

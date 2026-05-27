@@ -523,3 +523,20 @@ npm run dev && npm run agents        # SSE auto-activates, scheduler starts
 
 No database migration. `feedback_events` and `scheduled_at` are added
 automatically on the next write.
+
+## v7.0.0 — Voice, Groups, and Per-Contact Persona
+
+- Added `src/media/transcribe.js` for optional local voice-note transcription.
+  - Off by default for free-cost mode.
+  - Supports local whisper.cpp, Python Whisper CLI, custom command, or local HTTP Whisper service.
+  - Caches transcripts by audio file hash.
+- Added group-chat decision logic.
+  - Unaddressed group messages return `action=no`.
+  - Direct mentions / quoted replies can produce short neutral replies.
+  - Group replies never use flirty tones.
+- Added per-contact custom persona override.
+  - Contact rules now support `custom_persona`.
+  - Dashboard contact table includes a textarea to save persona per contact.
+  - Pipeline uses contact persona instead of global persona when present.
+- Added `npm run v7-test`.
+- WhatsApp agent now passes `mentioned_me` and `reply_to_me` flags where available.
