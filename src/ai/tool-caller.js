@@ -53,7 +53,7 @@ const TOOL_TRIGGERS = [
   {
     label: 'calculator',
     match: (body) => /\d+\s*[+\-*/x÷]\s*\d/.test(body) || /\b(\d+)%\s*of\b/i.test(body),
-    tools: [{ name: 'calculator', input: { expression: extractMath(body) } }],
+    tools: [{ name: 'calculator', input: (body) => ({ expression: extractMath(body) }) }],
   },
 
   // ── Explicit question asking for a fact ─────────────────────
@@ -63,14 +63,14 @@ const TOOL_TRIGGERS = [
       /\b(what is|who is|tell me about|do you know|search|look up|latest|news|kya hai)\b/i.test(body)
       && body.length > 20
     ),
-    tools: [{ name: 'web_search', input: { query: extractSearchQuery(body) } }],
+    tools: [{ name: 'web_search', input: (body) => ({ query: extractSearchQuery(body) }) }],
   },
 
   // ── Reminder / scheduling request ───────────────────────────
   {
     label: 'reminder',
     match: (body) => /\b(remind me|don.t forget|reminder|set alarm|remember to|yaad karna)\b/i.test(body),
-    tools: [{ name: 'reminder', input: { text: body.slice(0, 150), when: 'unspecified' } }],
+    tools: [{ name: 'reminder', input: (body) => ({ text: body.slice(0, 150), when: 'unspecified' }) }],
   },
 
 ];
