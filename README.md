@@ -10,7 +10,7 @@
   <img src="images/2.png" alt="ReplyWise Local dashboard preview" width="100%">
 </p>
 
-ReplyWise Local is a local-first communication co-pilot for WhatsApp and Telegram. It watches incoming messages through browser/session agents, analyzes the conversation context, decides whether replying is actually a good idea, generates safe reply options, and sends only after manual approval.
+ReplyWise Local is a local-first communication co-pilot for WhatsApp, Telegram, and experimental WeChat browser sessions. It watches incoming messages through browser/session agents, analyzes the conversation context, decides whether replying is actually a good idea, generates safe reply options, and sends only after manual approval.
 
 The product is designed for **free-cost operation**:
 
@@ -46,6 +46,9 @@ The MVP intentionally focuses on **two channels only**:
 |---|---|---|
 | WhatsApp | `whatsapp-web.js` browser session | Primary MVP channel |
 | Telegram | Playwright browser session | Secondary MVP channel |
+| WeChat | Playwright browser session / WeChat Web | Experimental channel |
+
+> WeChat support is included, but it should be treated as experimental until tested with your own WeChat Web session.
 
 The product does **not** try to support every platform in v0.1. Reliability matters more than channel count.
 
@@ -180,7 +183,7 @@ Optional AI modes can be added later:
 </p>
 
 ```txt
-WhatsApp / Telegram Web
+WhatsApp / Telegram / WeChat Web
         ↓
 Browser Agent
         ↓
@@ -221,6 +224,7 @@ replywise-local/
 │   │   ├── base-agent.js
 │   │   ├── whatsapp-agent.js
 │   │   ├── telegram-agent.js
+│   │   ├── wechat-agent.js
 │   │   └── agent-manager.js
 │   └── ui/
 │       └── templates.js
@@ -241,11 +245,14 @@ replywise-local/
 - npm
 - A WhatsApp account for WhatsApp Web login
 - A Telegram account for Telegram Web login
+- A WeChat account for WeChat Web QR login, if you enable the experimental WeChat agent
 - Chromium dependencies for Playwright / Puppeteer
 
 No official WhatsApp Cloud API key is required.
 
 No Telegram Bot API token is required for the browser-agent mode.
+
+No WeChat Official Account token, app secret, or developer API key is required for the experimental browser-agent mode.
 
 ---
 
@@ -275,6 +282,7 @@ AI_PROVIDER=local
 ALLOW_AUTOSEND=false
 
 ENABLED_AGENTS=whatsapp
+# Optional: whatsapp,telegram,wechat
 BROWSER_HEADLESS=false
 
 SCREENSHOT_ON_ERROR=false
@@ -318,6 +326,18 @@ Run Telegram only:
 npm run agent:telegram
 ```
 
+Run WeChat only:
+
+```bash
+npm run agent:wechat
+```
+
+Run WhatsApp + Telegram + WeChat:
+
+```bash
+npm run agent:all
+```
+
 Run all enabled agents:
 
 ```bash
@@ -328,7 +348,7 @@ npm run agents
 
 ## Recommended v0.1 Test Flow
 
-Start with one channel and one test contact.
+Start with one channel and one test contact. Use WhatsApp first. Test WeChat later because it depends on WeChat Web availability for your account.
 
 ```txt
 1. Start dashboard
@@ -362,7 +382,7 @@ Success means:
 | `APP_BASE_URL` | `http://localhost:3000` | Orchestrator URL used by agents |
 | `AI_PROVIDER` | `local` | `local` or optional `ollama` |
 | `ALLOW_AUTOSEND` | `false` | Must stay false for safety |
-| `ENABLED_AGENTS` | `whatsapp` | Comma-separated agent list |
+| `ENABLED_AGENTS` | `whatsapp` | Comma-separated agent list, e.g. `whatsapp,telegram,wechat` |
 | `BROWSER_HEADLESS` | `false` | Set true after login is stable |
 | `SESSION_DIR` | `./data/sessions` | Persistent browser session folder |
 | `SCREENSHOT_ON_ERROR` | `false` | Emergency debugging only |
@@ -428,7 +448,7 @@ No auto-send by default.
 No stealth/bypass logic.
 No screenshot reading loop.
 No OCR-based message reading.
-No official API-key dependency for MVP.
+No official API-key dependency for MVP, including no WeChat Official Account API key for browser-agent mode.
 No reply after clear rejection or boundary.
 ```
 
@@ -444,12 +464,12 @@ Use this project for personal experimentation and local prototyping only. Prefer
 
 ## Why Not Many Channels?
 
-The v0.1 goal is not to support every messaging app.
+The v0.1 goal is not to support every messaging app. WeChat is included as an experimental browser-agent channel, but WhatsApp should remain the primary proof channel.
 
 The v0.1 goal is:
 
 ```txt
-One or two channels.
+One or two stable channels, with WeChat available as experimental.
 Free-cost.
 Reliable.
 Manual approval.
@@ -479,6 +499,14 @@ Additional platforms can be added later after the core product is proven.
 - WebSocket + DOM watcher
 - Same approval flow
 - Same memory system
+
+### v0.2.5 — Experimental WeChat
+
+- WeChat Web browser agent
+- QR login through WeChat Web
+- DOM-based message watcher
+- Same per-contact memory and approval flow
+- Treat as experimental because WeChat Web availability and selectors may vary by account/region
 
 ### v0.3 — Better Intelligence
 
@@ -515,6 +543,8 @@ npm run seed
 npm run agents
 npm run agent:whatsapp
 npm run agent:telegram
+npm run agent:wechat
+npm run agent:all
 npm test
 ```
 
@@ -563,6 +593,7 @@ Before adding a new platform, improve:
 
 - WhatsApp reliability
 - Telegram reliability
+- WeChat experimental reliability
 - Decision quality
 - Local memory
 - Safety rules
@@ -578,4 +609,4 @@ MIT License.
 
 ## Disclaimer
 
-ReplyWise Local is an experimental local-first assistant. It is not affiliated with WhatsApp, Telegram, Meta, or any messaging platform. Use responsibly, respect privacy, and always remain the author of your own messages.
+ReplyWise Local is an experimental local-first assistant. It is not affiliated with WhatsApp, Telegram, WeChat, Meta, Tencent, or any messaging platform. Use responsibly, respect privacy, and always remain the author of your own messages.
