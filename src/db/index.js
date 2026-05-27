@@ -50,14 +50,15 @@ function normalizeChannel(channel) {
   const value = String(channel || 'manual').toLowerCase().trim().replace(/_/g, '-');
   if (['wa', 'whatsapp', 'whatsapp-webjs', 'webjs'].includes(value)) return 'whatsapp';
   if (['telegram', 'tg'].includes(value)) return 'telegram';
+  if (['wechat', 'wc', 'weixin', 'wx'].includes(value)) return 'wechat';
   if (['manual', 'sandbox'].includes(value)) return 'manual';
   return value.replace(/[^a-z0-9-]/g, '') || 'manual';
 }
 
 function assertSupportedChannel(channel) {
   const ch = normalizeChannel(channel);
-  if (!['whatsapp', 'telegram', 'manual'].includes(ch)) {
-    throw new Error(`Unsupported channel in this MVP: ${ch}. Use whatsapp or telegram.`);
+  if (!['whatsapp', 'telegram', 'wechat', 'manual'].includes(ch)) {
+    throw new Error(`Unsupported channel: ${ch}. Supported: whatsapp, telegram, wechat.`);
   }
   return ch;
 }
@@ -104,6 +105,14 @@ function normalizeContactRow(row) {
 }
 
 function normalizeMessageRow(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    media_type: row.media_type || 'text',
+    media_summary: row.media_summary || null,
+  };
+}
+function _normalizeMessageRow_orig(row) {
   return row ? { ...row, contactId: row.contact_id } : row;
 }
 
@@ -118,6 +127,10 @@ function normalizeSuggestionRow(row) {
     statsJson: row.stats_json,
     stageAnalysis: row.stage_analysis,
     nextMoveHint: row.next_move_hint,
+    toolHtml: row.tool_html,
+    toolsUsed: row.tools_used,
+    memoryUsed: row.memory_used,
+    preferenceApplied: row.preference_applied,
     chosenText: row.chosen_text,
     automationJson: row.automation_json,
     recommendedText: row.recommended_text,
@@ -157,6 +170,9 @@ async function upsertContact({ channel = 'manual', externalContactId, whatsappId
       can_send_after_approval: true,
       autopilot_mode: 'manual',
       auto_send_whitelisted: false,
+      auto_reply_enabled: false,
+      reply_delay_mode: 'normal',        // 'instant' | 'normal' | 'random'
+      reply_delay_seconds: 0,            // used when reply_delay_mode='instant' or 'normal'
     },
     stats: {},
     is_tracked: true,
@@ -189,7 +205,7 @@ async function listContacts() {
     });
 }
 
-async function insertMessage({ contactId, direction, body, timestamp, metadata }) {
+async function insertMessage({ contactId, direction, body, timestamp, metadata, media_type, media_summary }) {
   const store = await readStore();
   const row = {
     id: uuidv4(),
@@ -198,6 +214,8 @@ async function insertMessage({ contactId, direction, body, timestamp, metadata }
     direction,
     body,
     metadata: metadata || null,
+    media_type: media_type || 'text',
+    media_summary: media_summary || null,
     created_at: now(),
   };
   store.messages.push(row);
@@ -238,6 +256,10 @@ async function createSuggestion({ contactId, incomingMessageId, result }) {
     stage_analysis: result.stage_analysis || '',
     next_move_hint: result.next_move_hint || '',
     automation_json: result.automation || {},
+    tool_html: result._toolHtml || null,
+    tools_used: result._toolsUsed || [],
+    memory_used: result._memoryUsed || false,
+    preference_applied: result._preferenceApplied || null,
     recommended_text: result.automation?.recommended_text || null,
     recommended_option_index: result.automation?.recommended_index ?? null,
     recommended_tone: result.automation?.recommended_tone || null,
@@ -452,6 +474,17 @@ async function updateContactRules(contactId, patch = {}) {
   return normalizeContactRow(contact);
 }
 
+async function toggleContactAutoReply(contactId, enabled) {
+  return updateContactRules(contactId, { auto_reply_enabled: Boolean(enabled) });
+}
+
+async function setContactReplyDelay(contactId, { mode, seconds } = {}) {
+  const patch = {};
+  if (mode   !== undefined) patch.reply_delay_mode    = mode;
+  if (seconds !== undefined) patch.reply_delay_seconds = Number(seconds) || 0;
+  return updateContactRules(contactId, patch);
+}
+
 async function updateAgentStatus(channel, status, errorLog = null) {
   const store = await readStore();
   const ch = normalizeChannel(channel);
@@ -523,6 +556,8 @@ module.exports = {
   updateContactProfile,
   contactsNeedingRefresh,
   updateContactRules,
+  toggleContactAutoReply,
+  setContactReplyDelay,
   updateAgentStatus,
   getAgentStatuses,
   countAutoSendsToday,
@@ -530,4 +565,6 @@ module.exports = {
   disconnect,
   readStore,
   writeStore,
+  _readStore: readStore,
+  _writeStore: writeStore,
 };

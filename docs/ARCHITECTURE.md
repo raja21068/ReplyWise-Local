@@ -1,42 +1,62 @@
-# Architecture
+# Architecture — ReplyWise v4
 
-```txt
-Browser Agent
-  - WhatsApp: whatsapp-web.js
-  - Telegram: Playwright persistent session
-      ↓
-/api/ingest/:channel
-      ↓
-Local JSON store
-      ↓
-Decision Engine
-      ↓
-Reply Generator
-      ↓
-Smart Autopilot
-      ↓
-Dashboard or auto-send queue
-      ↓
+```
+Browser Agents (separate processes)
+  ├── WhatsApp  → whatsapp-web.js (Puppeteer)   ← NEW: media metadata + optional download
+  ├── Telegram  → Playwright (persistent session)
+  └── WeChat    → Playwright (web.wechat.com QR) ← NEW in v4
+         ↓
+/api/ingest/:channel  (POST with media_type, media_summary)
+         ↓
+Decision Engine v2
+  ├── Signal detection (boundary, conflict, emotional, low-effort)
+  ├── Media routing  (image/audio/video/file/sticker/unknown)  ← NEW
+  ├── Media risk score (low/medium/high)                       ← NEW
+  └── context_summary  (one-line human-readable summary)       ← NEW
+         ↓
+AI Provider Router
+  ├── local   (zero-cost rule engine, default)
+  ├── ollama  (local LLM, OLLAMA_BASE_URL)
+  └── claude  (Anthropic API, ANTHROPIC_API_KEY)              ← NEW
+         ↓
+Smart Autopilot Engine
+  └── graduated modes: manual → auto_choose → auto_send_safe
+         ↓
+Dashboard (human approves / waits / skips)
+         ↓
 /api/bridge/pending-outgoing
-      ↓
-Browser Agent sends through UI
+         ↓
+Browser Agent sends via UI automation
 ```
 
-## Smart Autopilot
+## Environment Variables (new in v4)
 
-Implemented in `src/brain/autopilot-engine.js`.
+| Variable | Default | Description |
+|---|---|---|
+| `ENABLED_AGENTS` | `whatsapp,telegram` | Comma-separated: `whatsapp,telegram,wechat` |
+| `AI_PROVIDER` | `local` | `local`, `ollama`, or `claude` |
+| `ANTHROPIC_API_KEY` | — | Required when `AI_PROVIDER=claude` |
+| `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | Claude model string |
+| `CLAUDE_FORCE` | `false` | Skip local shortcut even on WAIT/NO decisions |
+| `WHATSAPP_DOWNLOAD_MEDIA` | `false` | Download media files to `./data/media/whatsapp` |
+| `MEDIA_DIR` | `./data/media` | Root directory for downloaded media |
+| `AGENT_MAX_RESTARTS` | `8` | Max consecutive agent restart attempts |
 
-It returns:
+## Smart Autopilot modes
+
+- **manual** — suggestions shown, human chooses every send.
+- **auto_choose** — best option is pre-selected, human clicks send once.
+- **auto_send_safe** — auto-sends only low-risk greetings/acks from whitelisted contacts.
+
+## Decision Engine outputs (v2 additions)
 
 ```json
 {
-  "mode": "auto_choose",
-  "recommended_text": "...",
-  "auto_send": {
-    "allowed": false,
-    "blocked_reasons": []
-  }
+  "action": "yes|wait|no|repair|review",
+  "media_type": "text|image|audio|video|file|sticker|unknown",
+  "media_risk": "low|medium|high",
+  "context_summary": "Contact: sent an image. Safe to reply.",
+  "risk_level": "low|medium|high",
+  ...existing fields
 }
 ```
-
-The server stores this in each suggestion and queues an outgoing message only if auto-send is explicitly enabled and all safety checks pass.

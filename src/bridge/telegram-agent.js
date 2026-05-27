@@ -4,9 +4,63 @@
  * Login: Phone number + OTP code (first time only, then session persists).
  * Message detection: Intercepts WebSocket frames for real-time incoming messages.
  * Sending: Finds the chat by contact name, types into the message input, presses Enter.
+ *
+ * v2 additions (media parity with WhatsApp agent):
+ * • Detects media type from Telegram WebSocket frames (photo, document, sticker, voice, video)
+ * • Builds media_summary string from available metadata (file_name, mime_type, duration)
+ * • DOM observer also checks for media thumbnail CSS classes to classify message type
+ * • Passes media_type + media_summary to /api/ingest/telegram
  */
 
 const BaseAgent = require('./base-agent');
+
+// ── Telegram media type mapping ───────────────────────────────
+
+const TG_TYPE_MAP = {
+  messageMediaPhoto:    'image',
+  messageMediaDocument: 'file',
+  messageMediaGeo:      'text',       // location — treat as text
+  messageMediaContact:  'text',
+  messageMediaPoll:     'text',
+  messageMediaWebPage:  'text',
+  messageMediaUnsupported: 'unknown',
+};
+
+// Detect document sub-types from MIME or attributes
+function resolveTgMediaType(mediaObj) {
+  if (!mediaObj) return 'text';
+  const type = mediaObj._ || mediaObj.type || '';
+  if (type === 'messageMediaPhoto') return 'image';
+  if (type === 'messageMediaDocument') {
+    const attrs = mediaObj.document?.attributes || [];
+    if (attrs.some(a => a._ === 'documentAttributeVideo'))  return 'video';
+    if (attrs.some(a => a._ === 'documentAttributeAudio'))  return 'audio';
+    if (attrs.some(a => a._ === 'documentAttributeSticker')) return 'sticker';
+    if (attrs.some(a => a._ === 'documentAttributeAnimated')) return 'image'; // GIF
+    const mime = mediaObj.document?.mime_type || '';
+    if (mime.startsWith('image/'))  return 'image';
+    if (mime.startsWith('audio/') || mime.includes('ogg')) return 'audio';
+    if (mime.startsWith('video/'))  return 'video';
+    return 'file';
+  }
+  return TG_TYPE_MAP[type] || 'text';
+}
+
+function buildTgMediaSummary(mediaObj) {
+  if (!mediaObj) return null;
+  const parts = [];
+  const doc = mediaObj.document;
+  if (doc) {
+    const nameAttr = (doc.attributes || []).find(a => a.file_name);
+    if (nameAttr?.file_name) parts.push(`file: "${nameAttr.file_name}"`);
+    if (doc.mime_type)       parts.push(`(${doc.mime_type})`);
+    const audioAttr = (doc.attributes || []).find(a => a._ === 'documentAttributeAudio');
+    if (audioAttr?.duration) parts.push(`duration: ${audioAttr.duration}s`);
+    if (doc.size)            parts.push(`${Math.round(doc.size / 1024)}KB`);
+  }
+  if (mediaObj.photo) parts.push('photo');
+  return parts.length ? parts.join(' · ') : null;
+}
 
 class TelegramAgent extends BaseAgent {
   constructor() {
@@ -163,17 +217,48 @@ class TelegramAgent extends BaseAgent {
       if (data._ === 'updateNewMessage' || data._?.includes?.('message')) {
         const msg = data.message || data;
         if (msg.out) return; // Skip outgoing
-        if (msg.message) {
-          const fromId = msg.from_id?.user_id || msg.peer_id?.user_id || 'unknown';
-          await this.onIncomingMessage({
-            from: `tg_${fromId}`,
-            displayName: `User ${fromId}`,
-            body: msg.message,
-          });
-        }
+
+        const fromId     = msg.from_id?.user_id || msg.peer_id?.user_id || 'unknown';
+        const textBody   = msg.message || msg.text || '';
+        const mediaObj   = msg.media || null;
+        const mediaType  = mediaObj ? resolveTgMediaType(mediaObj) : 'text';
+        const mediaSummary = mediaObj ? buildTgMediaSummary(mediaObj) : null;
+
+        // Only ingest if there's text or media (skip empty frames)
+        if (!textBody && !mediaObj) return;
+
+        const body = textBody || `[${mediaType}]`;
+
+        await this.onIncomingMessage({
+          from: `tg_${fromId}`,
+          displayName: `User ${fromId}`,
+          body,
+          media_type: mediaType,
+          media_summary: mediaSummary,
+        });
       }
     } catch {
       // Not JSON — might be binary TL protocol. Ignore.
+    }
+  }
+
+  // Override to pass media_type + media_summary through to orchestrator
+  async onIncomingMessage({ from, displayName, body, timestamp, media_type, media_summary }) {
+    if (!body || !String(body).trim()) return;
+    this.log(`← [${displayName || from}]: ${body.slice(0, 80)}`);
+    const axios = require('axios');
+    try {
+      await axios.post(`${this.orchestratorUrl}/api/ingest/${this.channel}`, {
+        from: String(from).trim(),
+        externalContactId: String(from).trim(),
+        displayName: displayName || from,
+        body: String(body).trim(),
+        timestamp: timestamp || new Date().toISOString(),
+        media_type: media_type || 'text',
+        media_summary: media_summary || null,
+      }, { timeout: 15000 });
+    } catch (err) {
+      this.log(`Failed to POST incoming to orchestrator: ${err.message}`);
     }
   }
 

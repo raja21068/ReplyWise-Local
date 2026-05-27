@@ -16,7 +16,7 @@ async function generateSuggestionsOllama({ contact, recentMessages, incomingMess
 
   const baseUrl = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
   const model = process.env.OLLAMA_MODEL || 'llama3.1';
-  const prompt = buildSuggestionPrompt({ contact, recentMessages, incomingMessage, userPersona, decision, stats });
+  const prompt = buildSuggestionPrompt({ contact, recentMessages, incomingMessage, userPersona, decision, stats, memoryBlock: incomingMessage._memoryBlock, toolContext: incomingMessage._toolContext, preferenceBlock: incomingMessage._preferenceBlock });
   const response = await axios.post(`${baseUrl}/api/generate`, {
     model,
     prompt,
@@ -65,15 +65,19 @@ CHAT:\n${chat}`;
   }
 }
 
-function buildSuggestionPrompt({ contact, recentMessages, incomingMessage, userPersona, decision, stats }) {
+function buildSuggestionPrompt({ contact, recentMessages, incomingMessage, userPersona, decision, stats, memoryBlock, toolContext, preferenceBlock }) {
   const chat = recentMessages.map((m) => `${m.direction}: ${m.body}`).join('\n');
+  const memSection  = memoryBlock     ? `\n${memoryBlock}\n`     : '';
+  const toolSection = toolContext     ? `\n${toolContext}\n`     : '';
+  const prefSection = preferenceBlock ? `\n${preferenceBlock}\n` : '';
+
   return `You are ConversationOS Local, a human-in-the-loop communication judgment assistant.
 Your most important job: decide whether replying is a good idea before drafting text.
 Never auto-send. Never pressure, guilt-trip, manipulate, sexualize, or fabricate facts.
 Match energy. Short replies are often better than perfect replies.
 
 CONTACT PROFILE:\n${contact.profile_summary || 'No profile yet.'}
-
+${memSection}${toolSection}${prefSection}
 RECENT CHAT:\n${chat}
 
 LATEST MESSAGE:\n${incomingMessage.body}
