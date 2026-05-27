@@ -22,6 +22,8 @@ function generateSuggestionsLocal({ contact, recentMessages, incomingMessage, us
 
   if (isGroup && decision.action === 'yes') {
     options = groupOptions(language, style, stats);
+  } else if (isGroup && decision.action === 'no') {
+    options = groupNoReplyOptions(language, decision);
   } else if (decision.action === 'no') {
     options = boundaryOptions(language, style);
   } else if (decision.action === 'repair') {
@@ -113,6 +115,21 @@ function isEnglish(language) {
 
 // ── Option generators ──────────────────────────────────────
 
+function groupNoReplyOptions(language, decision = {}) {
+  const english = isEnglish(language);
+  if (english) {
+    return [
+      { tone: 'no-reply/group', text: '[Do not reply — this group message was not addressed to you]', rationale: 'Most group messages do not need a response unless you are tagged or directly asked.', score: 96, risk: 'low', action: 'skip' },
+      { tone: 'watch/group', text: '[Watch the thread and reply only if someone asks you directly]', rationale: 'Keeps you from looking bot-like or needy in a group.', score: 92, risk: 'low', action: 'wait' },
+      { tone: 'manual-only/group', text: '[Manual reply only if you have specific value to add]', rationale: 'Group replies should be intentional and neutral.', score: 88, risk: 'low', action: 'skip' },
+    ];
+  }
+  return [
+    { tone: 'no-reply/group', text: '[Reply na karo — ye group message directly tumhare liye nahi hai]', rationale: 'Group mein har message ka reply zaroori nahi hota.', score: 96, risk: 'low', action: 'skip' },
+    { tone: 'watch/group', text: '[Thread dekho, sirf direct ask/tag par reply karo]', rationale: 'Bot-like ya needy lagne se bachata hai.', score: 92, risk: 'low', action: 'wait' },
+    { tone: 'manual-only/group', text: '[Manual reply only agar koi useful baat add karni ho]', rationale: 'Group replies short, neutral, aur intentional hone chahiye.', score: 88, risk: 'low', action: 'skip' },
+  ];
+}
 
 function groupOptions(language, style = {}, stats = {}) {
   const english = isEnglish(language) || style.tone === 'mature';

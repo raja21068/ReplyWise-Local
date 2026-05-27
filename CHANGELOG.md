@@ -540,3 +540,30 @@ automatically on the next write.
   - Pipeline uses contact persona instead of global persona when present.
 - Added `npm run v7-test`.
 - WhatsApp agent now passes `mentioned_me` and `reply_to_me` flags where available.
+
+## v7.1.0 — Stability Patch
+
+Focused patch after v7 feature review.
+
+- Fixed media/audio routing stability.
+  - `voice`, `ptt`, `ogg`, and similar media labels normalize to `audio`.
+  - Audio/media-only messages can enter the pipeline without crashing on empty body.
+  - Transcript text is copied into `media_summary` when available.
+- Hardened group chat behavior.
+  - Unaddressed group messages now produce non-send instruction options instead of normal boundary/apology replies.
+  - Directly addressed group messages still produce short, neutral, non-flirty replies.
+- Improved dashboard support.
+  - Dashboard channel cards are built dynamically and include experimental WeChat when enabled/supported.
+  - Sandbox tester now exposes WhatsApp, Telegram, WeChat, media type, media summary, group chat, and direct-mention flags.
+- Added `npm run v71-test`.
+
+Verification commands run:
+
+```txt
+npm run syntax      ✅
+npm run v7-test     ✅
+npm run v71-test    ✅
+npm run style-test  ✅
+```
+
+Live browser login tests were not run because they require real WhatsApp/Telegram/WeChat sessions.

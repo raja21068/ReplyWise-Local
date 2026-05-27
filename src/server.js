@@ -10,6 +10,7 @@ const { assertHumanApproval, cleanSuggestionText, isSystemInstructionText } = re
 const plugins = require('./plugins');
 const memory   = require('./memory');
 const { callTools } = require('./ai/tool-caller');
+const { normalizeMediaType } = require('./brain/decision-engine');
 
 // ── v6 additions ──────────────────────────────────────────────
 const bus               = require('./realtime/event-bus');
@@ -28,6 +29,20 @@ function boolEnv(name, defaultValue = false) {
 
 function screenshotsEnabled() {
   return boolEnv('SCREENSHOT_ON_ERROR', false) || boolEnv('ENABLE_LIVE_SCREENSHOTS', false);
+}
+
+function dashboardChannels(envValue = process.env.ENABLED_AGENTS || 'whatsapp,telegram') {
+  const raw = String(envValue || 'whatsapp,telegram').split(',').map(s => s.trim()).filter(Boolean);
+  const normalized = raw.map(ch => {
+    try { return db.normalizeChannel(ch); } catch { return String(ch || '').toLowerCase(); }
+  });
+  const set = new Set(['whatsapp', 'telegram']);
+  for (const ch of normalized) {
+    if (['whatsapp', 'telegram', 'wechat'].includes(ch)) set.add(ch);
+  }
+  // Keep WeChat visible when the package supports it, but treat it as experimental.
+  if (boolEnv('SHOW_EXPERIMENTAL_WECHAT', true)) set.add('wechat');
+  return [...set];
 }
 
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -62,6 +77,7 @@ app.get('/', async (req, res, next) => {
         autoChoose: boolEnv('AUTO_CHOOSE_ENABLED', true),
         autoSend: boolEnv('AUTO_SEND_ENABLED', false),
         autoSendWhitelistOnly: boolEnv('AUTO_SEND_WHITELIST_ONLY', true),
+        channels: dashboardChannels(process.env.ENABLED_AGENTS || 'whatsapp,telegram'),
       },
     }));
   } catch (err) { next(err); }
@@ -468,7 +484,7 @@ async function processIncomingMessage({
 
   let workingBody = String(body || '').trim();
   let transcript = null;
-  const normalizedMediaType = media_type || 'text';
+  const normalizedMediaType = normalizeMediaType(media_type || (local_media_path ? 'audio' : 'text'));
 
   if (normalizedMediaType === 'audio' && local_media_path) {
     try {
@@ -506,7 +522,7 @@ async function processIncomingMessage({
       ...metadata,
     },
     media_type: normalizedMediaType,
-    media_summary: media_summary || null,
+    media_summary: media_summary || (transcript?.text ? transcript.text.slice(0, 500) : null),
   });
   const recentMessages = await db.getRecentMessages(contact.id, Number(process.env.MAX_RECENT_MESSAGES || 30));
 
@@ -545,8 +561,8 @@ async function processIncomingMessage({
   // ── Attach media context + memory + tool results + preferences ──
   const enrichedIncoming = {
     ...incoming,
-    media_type:   media_type || incoming.metadata?.media_type || 'text',
-    media_summary: media_summary || null,
+    media_type:   normalizedMediaType,
+    media_summary: media_summary || (transcript?.text ? transcript.text.slice(0, 500) : null),
     _memoryBlock:  memoryBlock  || null,
     _toolContext:  toolResult.contextBlock || null,
     _toolHtml:     toolResult.dashboardHtml || null,
@@ -677,7 +693,7 @@ function esc(value) {
 }
 
 function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentStatuses, costSummary, env }) {
-  const agentCards = ['whatsapp', 'telegram'].map(ch => {
+  const agentCards = (env.channels || ['whatsapp', 'telegram', 'wechat']).map(ch => {
     const a = (agentStatuses || []).find(x => x.channel === ch) || { channel: ch, status: 'not_started' };
     const icon = a.status === 'active' ? '🟢' : a.status === 'login_required' ? '🟡' : '⚪';
     return `<div class="mini-card"><strong>${icon} ${ch}</strong><br><span>${esc(a.status)}</span>${a.status === 'login_required' ? `<br><a href="/reauth/${ch}">Re-auth</a>` : ''}${a.errorLog ? `<p class="muted">${esc(a.errorLog)}</p>` : ''}</div>`;
@@ -758,7 +774,7 @@ function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentSta
 
   <section><h3>Pending Decisions <span id="live-indicator" class="muted" style="font-size:11px;font-weight:normal">⚪ connecting…</span></h3>${suggestionCards}</section>
 
-  <section><h3>Sandbox Test</h3><div class="card sandbox"><form method="POST" action="/api/sandbox/whatsapp/incoming"><select name="channel" onchange="this.form.action='/api/sandbox/'+this.value+'/incoming'"><option>whatsapp</option><option>telegram</option><option>wechat</option></select><input name="externalContactId" placeholder="contact_id e.g. tg_ayesha" required><input name="displayName" placeholder="Display name"><input name="body" placeholder="Incoming message" required><label class="muted"><input type="checkbox" name="is_group" value="true"> group chat</label><label class="muted"><input type="checkbox" name="mentioned_me" value="true"> mentioned me</label><button type="submit">Analyze Message</button></form></div></section>
+  <section><h3>Sandbox Test</h3><div class="card sandbox"><form method="POST" action="/api/sandbox/whatsapp/incoming"><select name="channel" onchange="this.form.action='/api/sandbox/'+this.value+'/incoming'"><option>whatsapp</option><option>telegram</option><option>wechat</option></select><input name="externalContactId" placeholder="contact_id e.g. tg_ayesha" required><input name="displayName" placeholder="Display name"><input name="body" placeholder="Incoming message or leave empty for media test"><select name="media_type" title="Media type"><option value="text">text</option><option value="audio">audio</option><option value="image">image</option><option value="sticker">sticker</option><option value="file">file</option></select><input name="media_summary" placeholder="Optional media summary / transcript"><label class="muted" style="display:block;margin:6px 0"><input type="checkbox" name="is_group" value="true"> group chat</label><label class="muted" style="display:block;margin:6px 0"><input type="checkbox" name="mentioned_me" value="true"> directly mentioned me</label><button type="submit">Analyze Message</button></form></div></section>
 
   <section><h3>Contacts</h3><table><tr><th>Channel</th><th>Name</th><th>Stage</th><th>Msgs</th><th>Custom Persona</th><th>Autopilot</th><th title="Per-chat auto-reply">🤖</th><th title="Reply delay">Delay</th></tr>${contactRows || '<tr><td colspan="8">No contacts yet</td></tr>'}</table></section>
 
@@ -952,7 +968,7 @@ app.listen(port, async () => {
   console.log('Killer promise: It tells you whether replying is a good idea.');
   console.log(`AI: ${process.env.AI_PROVIDER || 'local'} · Agents: ${process.env.ENABLED_AGENTS || 'whatsapp,telegram'} · Screenshots: ${screenshotsEnabled() ? 'debug only' : 'off'}`);
   console.log(`Realtime: SSE @ /api/events/stream · Scheduler: ${process.env.SCHEDULER_ENABLED !== 'false' ? 'on' : 'off'} · Feedback learning: on`);
-  console.log(`Zero messaging API keys · Channels: ${process.env.ENABLED_AGENTS || 'whatsapp,telegram'} · Media: ${process.env.WHATSAPP_DOWNLOAD_MEDIA === 'true' ? 'download on' : 'metadata only'}\n`);
+  console.log(`Zero messaging API keys · Channels: ${process.env.ENABLED_AGENTS || 'whatsapp,telegram,wechat'} · Media: ${process.env.WHATSAPP_DOWNLOAD_MEDIA === 'true' ? 'download on' : 'metadata only'}\n`);
 });
 
 // ── v6: bus → agent status broadcast ─────────────────────────
