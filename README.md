@@ -4,61 +4,76 @@
   <img src="images/1.png" alt="ReplyWise Local hero preview" width="100%">
 </p>
 
-**It does not just write replies. It tells you whether replying is a good idea.**
+<h3 align="center">It does not just write replies. It tells you whether replying is a good idea.</h3>
+
+<p align="center">
+  <strong>Local-first AI reply assistant for WhatsApp, Telegram, and experimental WeChat browser sessions.</strong>
+</p>
+
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-v7.2-blue">
+  <img alt="Mode" src="https://img.shields.io/badge/mode-local--first-green">
+  <img alt="Human Approval" src="https://img.shields.io/badge/manual_approval-default-important">
+  <img alt="Ollama" src="https://img.shields.io/badge/Ollama-optional-lightgrey">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-black">
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#why-replywise">Why ReplyWise</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#easy-ai-mode">Easy AI Mode</a> ·
+  <a href="#safety">Safety</a>
+</p>
+
+---
+
+## Why ReplyWise?
+
+Most AI reply tools only answer:
+
+> “What should I reply?”
+
+ReplyWise answers the more important question first:
+
+> **“Should I reply at all?”**
+
+It analyzes timing, tone, emotional state, energy balance, boundaries, conversation momentum, group context, and per-contact memory before suggesting anything.
 
 <p align="center">
   <img src="images/2.png" alt="ReplyWise Local dashboard preview" width="100%">
 </p>
 
-ReplyWise Local is a local-first communication co-pilot for WhatsApp, Telegram, and experimental WeChat browser sessions. It watches incoming messages through browser/session agents, analyzes the conversation context, decides whether replying is actually a good idea, generates safe reply options, and sends only after manual approval.
-
-The product is designed for **free-cost operation**:
-
-- No official messaging API keys by default
-- No bot tokens by default
-- No paid cloud AI required
-- No screenshot/OCR reading loop
-- Browser-session agents only
-- Local decision engine first
-- Manual approval before every send
-
 ---
 
-## Core Promise
+## Core Product Idea
 
-Most AI tools only answer this:
+ReplyWise is built around one powerful idea:
 
-> “What should I reply?”
+> **Different contact = different memory = different reply style.**
 
-ReplyWise Local answers the more important question first:
+The same message can produce different replies depending on the person.
 
-> “Should I reply at all?”
-
-Every incoming message is analyzed for timing, tone, emotional state, energy balance, boundaries, and conversation momentum.
-
----
-
-## MVP Channels
-
-The MVP intentionally focuses on **two channels only**:
-
-| Channel | Mode | Status |
+| Contact | Style Memory | Example Reply Style |
 |---|---|---|
-| WhatsApp | `whatsapp-web.js` browser session | Primary MVP channel |
-| Telegram | Playwright browser session | Secondary MVP channel |
-| WeChat | Playwright browser session / WeChat Web | Experimental channel |
+| Ayesha | Roman Urdu, playful, light emojis | “Weekend ka plan abhi pending hai 😂 tumhara?” |
+| Sara | Mature English, low emojis | “Nothing fixed yet. Probably a quiet weekend. What about you?” |
+| Hina | Short, direct, busy | “Nothing fixed yet. You?” |
+| Noor | Sarcastic, meme energy | “Survive, eat, repeat. Very ambitious plan 😂” |
 
-> WeChat support is included, but it should be treated as experimental until tested with your own WeChat Web session.
-
-The product does **not** try to support every platform in v0.1. Reliability matters more than channel count.
+This makes ReplyWise feel like a **personal communication brain**, not a generic chatbot.
 
 ---
 
-## Key Features
+## Features
 
-### 1. Should-I-Reply Decision Engine
+<table>
+<tr>
+<td width="50%">
 
-Each incoming message produces a structured decision:
+### 🧠 Should-I-Reply Engine
+
+Every incoming message gets a structured decision:
 
 ```json
 {
@@ -70,109 +85,97 @@ Each incoming message produces a structured decision:
 }
 ```
 
-### 2. Reply Options
+</td>
+<td width="50%">
 
-When replying is a good idea, ReplyWise generates three options:
+### 🎭 Per-Contact Style Memory
 
-- Casual
-- Playful
-- Genuine / repair / short, depending on context
+ReplyWise remembers:
 
-Each option is designed to be natural, short, and consistent with the user's normal tone.
+- Preferred language
+- Emoji style
+- Conversation stage
+- Inside jokes
+- Boundaries
+- Reply length preference
+- Custom persona per contact
 
-### 3. Manual Approval Only
+</td>
+</tr>
+<tr>
+<td width="50%">
 
-ReplyWise never auto-sends by default.
+### 🎙 Voice Note Transcription
 
-```txt
-Incoming message
-↓
-Analyze decision
-↓
-Generate reply options
-↓
-User approves, edits, waits, or skips
-↓
-Browser agent sends only after approval
-```
+Voice messages can be transcribed before the reply pipeline runs.
 
-### 4. Energy Matching
+Supported options:
 
-The system tracks whether you are over-investing compared to the other person.
+- Local `whisper.cpp`
+- Local Python Whisper / Faster Whisper
+- Local HTTP transcription service
+- Custom transcription command
 
-Example:
+</td>
+<td width="50%">
 
-```txt
-Your average message length: 42 words
-Their average message length: 8 words
-Warning: you are writing 5x more.
-Best move: keep the next reply short.
-```
+### 👥 Group Chat Mode
 
-### 5. Conversation Temperature
+Group messages use different rules:
 
-Each contact gets a live state:
+- Do not reply to every group message
+- Reply only when directly mentioned or clearly relevant
+- Keep replies shorter
+- Never use flirty/romantic tone in groups
+- Avoid bot-like behavior
 
-```txt
-Cold
-Neutral
-Warm
-Playful
-Flirty
-Deep
-Tense
-Paused
-```
+</td>
+</tr>
+<tr>
+<td width="50%">
 
-Reply suggestions are adapted to this state.
+### ⚡ Easy AI Mode
 
-### 6. Anti-Cringe Filter
+No Ollama required.
 
-ReplyWise avoids replies that are:
+ReplyWise can use:
 
-- Too long
-- Too needy
-- Too poetic
-- Too fake
-- Too intense
-- Too flirty too early
-- Too AI-sounding
+- Gemini
+- OpenRouter
+- Groq
+- Local fallback
 
-### 7. Local Memory
+If an API limit is hit, it falls back safely.
 
-The system stores practical per-contact memory:
+</td>
+<td width="50%">
 
-```txt
-Facts:
-- exams next week
-- likes Roman Urdu
-- prefers short replies when busy
+### 🛡 Human-in-the-Loop Safety
 
-Style:
-- playful
-- light emojis
-- responds well to teasing
+By default:
 
-Boundaries:
-- do not pressure during exams
-- avoid heavy late-night topics
+- No auto-send
+- No hidden sending
+- No screenshot/OCR reading loop
+- No spam behavior
+- No reply after clear boundary/rejection
+- Manual approval before sending
 
-Inside jokes:
-- Pepsi vs Cola
-- fear of lizards
-```
+</td>
+</tr>
+</table>
 
-### 8. Free-Cost First
+---
 
-Default mode uses local rules and templates.
+## Supported Channels
 
-Optional AI modes can be added later:
+| Channel | Mode | Status |
+|---|---|---|
+| WhatsApp | `whatsapp-web.js` browser session | Primary MVP channel |
+| Telegram | Playwright browser session | Secondary MVP channel |
+| WeChat | Playwright browser session / WeChat Web | Experimental |
 
-| Mode | Cost | Privacy | Description |
-|---|---:|---|---|
-| Local rules | Free | Local | Default |
-| Ollama | Free after setup | Local | Optional local LLM |
-| Gemini / cloud AI | API-dependent | External | Optional user-provided key only |
+> WeChat support is included, but treat it as experimental until tested with your own WeChat Web session.
 
 ---
 
@@ -189,11 +192,17 @@ Browser Agent
         ↓
 Incoming Message Ingest API
         ↓
+Voice Transcription / Media Context
+        ↓
 Conversation Engine
         ↓
 Should-I-Reply Decision
         ↓
+Per-Contact Memory + Custom Persona
+        ↓
 Reply Generator
+        ↓
+Safety / Group Rules / Autopilot Guardrails
         ↓
 Mobile Approval Dashboard
         ↓
@@ -201,58 +210,6 @@ Outgoing Queue
         ↓
 Browser Agent Sends Through Web UI
 ```
-
----
-
-## Project Structure
-
-```txt
-replywise-local/
-├── src/
-│   ├── server.js
-│   ├── db/
-│   │   ├── index.js
-│   │   └── seed.js
-│   ├── ai/
-│   │   ├── index.js
-│   │   ├── local-decision-engine.js
-│   │   ├── local-template-engine.js
-│   │   └── ollama-client.js
-│   ├── safety/
-│   │   └── guardrails.js
-│   ├── bridge/
-│   │   ├── base-agent.js
-│   │   ├── whatsapp-agent.js
-│   │   ├── telegram-agent.js
-│   │   ├── wechat-agent.js
-│   │   └── agent-manager.js
-│   └── ui/
-│       └── templates.js
-├── data/
-│   ├── sessions/
-│   └── screenshots/
-├── scripts/
-├── .env.example
-├── package.json
-└── README.md
-```
-
----
-
-## Requirements
-
-- Node.js 20+
-- npm
-- A WhatsApp account for WhatsApp Web login
-- A Telegram account for Telegram Web login
-- A WeChat account for WeChat Web QR login, if you enable the experimental WeChat agent
-- Chromium dependencies for Playwright / Puppeteer
-
-No official WhatsApp Cloud API key is required.
-
-No Telegram Bot API token is required for the browser-agent mode.
-
-No WeChat Official Account token, app secret, or developer API key is required for the experimental browser-agent mode.
 
 ---
 
@@ -266,41 +223,22 @@ cd replywise-local
 npm install
 ```
 
-### 2. Configure
+### 2. Run the setup wizard
 
 ```bash
-cp .env.example .env
+npm run setup
 ```
 
-Recommended free-cost settings:
+The wizard helps you choose:
 
-```env
-PORT=3000
-APP_BASE_URL=http://localhost:3000
+- Local-only mode
+- Gemini key
+- OpenRouter fallback
+- Groq fallback
+- Daily cloud call limit
+- Enabled agents
 
-AI_PROVIDER=local
-ALLOW_AUTOSEND=false
-
-ENABLED_AGENTS=whatsapp
-# Optional: whatsapp,telegram,wechat
-BROWSER_HEADLESS=false
-
-SCREENSHOT_ON_ERROR=false
-LIVE_SCREENSHOT=false
-OCR_ENABLED=false
-
-BRIDGE_POLL_MS=5000
-HEALTH_CHECK_INTERVAL=60
-```
-
-### 3. Reset and seed database
-
-```bash
-npm run reset
-npm run seed
-```
-
-### 4. Start the dashboard
+### 3. Start the dashboard
 
 ```bash
 npm run dev
@@ -312,53 +250,148 @@ Open:
 http://localhost:3000
 ```
 
-### 5. Start browser agents
-
-Run WhatsApp only:
+### 4. Start an agent
 
 ```bash
 npm run agent:whatsapp
 ```
 
-Run Telegram only:
+Other options:
 
 ```bash
 npm run agent:telegram
-```
-
-Run WeChat only:
-
-```bash
 npm run agent:wechat
-```
-
-Run WhatsApp + Telegram + WeChat:
-
-```bash
 npm run agent:all
-```
-
-Run all enabled agents:
-
-```bash
 npm run agents
 ```
 
 ---
 
-## Recommended v0.1 Test Flow
+## Easy AI Mode
 
-Start with one channel and one test contact. Use WhatsApp first. Test WeChat later because it depends on WeChat Web availability for your account.
+ReplyWise v7.2 is designed for normal users who do **not** want to install Ollama.
+
+Recommended `.env`:
+
+```env
+AI_PROVIDER=easy
+AI_PROVIDER_CHAIN=gemini,openrouter,groq,local
+
+GEMINI_API_KEY=
+OPENROUTER_API_KEY=
+GROQ_API_KEY=
+
+MAX_CLOUD_CALLS_PER_DAY=200
+DAILY_AI_BUDGET_USD=1.00
+FALLBACK_TO_LOCAL_ON_LIMIT=true
+ALLOW_AUTOSEND=false
+```
+
+How the fallback works:
+
+```txt
+Try Gemini
+  ↓ if no key / rate limit / error
+Try OpenRouter
+  ↓ if no key / rate limit / error
+Try Groq
+  ↓ if no key / rate limit / error
+Use local safe fallback
+```
+
+This is **provider fallback**, not quota abuse or key rotation.
+
+---
+
+## Local-Only Mode
+
+ReplyWise can run without any cloud API key:
+
+```env
+AI_PROVIDER=local
+AI_PROVIDER_CHAIN=local
+ALLOW_AUTOSEND=false
+```
+
+Local mode still supports:
+
+- Should-I-reply decisions
+- Basic reply templates
+- Energy matching
+- Group rules
+- Anti-cringe checks
+- Manual approval dashboard
+
+---
+
+## Voice Transcription
+
+Voice notes can be handled without Ollama.
+
+```env
+TRANSCRIBE_ENABLED=false
+TRANSCRIBE_BACKEND=auto
+TRANSCRIBE_COMMAND=
+TRANSCRIBE_HTTP_URL=
+```
+
+Recommended privacy-first approach:
+
+```txt
+whisper.cpp local → best privacy
+Python faster-whisper → good local option
+Local HTTP service → good for advanced users
+Cloud STT → easiest but external/private-data risk
+```
+
+If transcription fails, ReplyWise does not blindly generate a fake reply. It asks for review or uses media-aware safe logic.
+
+---
+
+## Group Chat Logic
+
+Group chats are not treated like private chats.
+
+| Situation | Decision |
+|---|---|
+| Random group message, no mention | Usually no reply |
+| Direct @mention | Short neutral reply allowed |
+| Question to everyone | Optional short reply |
+| Flirty context in group | Block/avoid |
+| Conflict in group | Calm repair or no reply |
+| Unknown media/file in group | Review manually |
+
+---
+
+## Per-Contact Custom Persona
+
+Each contact can override the global persona.
+
+Example:
+
+```txt
+Ayesha:
+Reply in playful Roman Urdu, short messages, light emojis.
+Do not over-flirt. Do not pressure during exams.
+```
+
+This lets ReplyWise adapt to different people naturally.
+
+---
+
+## Recommended Test Flow
+
+Start with WhatsApp and one test contact.
 
 ```txt
 1. Start dashboard
 2. Start WhatsApp agent
-3. Scan WhatsApp Web QR code
+3. Scan WhatsApp Web QR
 4. Ask a test contact to message you
-5. Confirm the incoming message appears in dashboard
-6. Review the should-reply decision
-7. Approve or edit a reply
-8. Confirm the browser agent sends it
+5. Confirm message appears in dashboard
+6. Check should-reply decision
+7. Approve/edit a reply
+8. Confirm browser agent sends it
 9. Confirm outgoing status becomes sent
 ```
 
@@ -370,7 +403,7 @@ Success means:
 - Manual approval required
 - Outgoing message queued
 - Browser agent sends through web UI
-- No screenshot/OCR used
+- No screenshot/OCR used for message reading
 
 ---
 
@@ -380,173 +413,27 @@ Success means:
 |---|---|---|
 | `PORT` | `3000` | Dashboard/API port |
 | `APP_BASE_URL` | `http://localhost:3000` | Orchestrator URL used by agents |
-| `AI_PROVIDER` | `local` | `local` or optional `ollama` |
-| `ALLOW_AUTOSEND` | `false` | Must stay false for safety |
-| `ENABLED_AGENTS` | `whatsapp` | Comma-separated agent list, e.g. `whatsapp,telegram,wechat` |
+| `AI_PROVIDER` | `easy` | `easy`, `local`, `gemini`, `openrouter`, `groq`, or optional `ollama` |
+| `AI_PROVIDER_CHAIN` | `gemini,openrouter,groq,local` | Provider fallback order |
+| `GEMINI_API_KEY` | empty | Optional Gemini key |
+| `OPENROUTER_API_KEY` | empty | Optional OpenRouter key |
+| `GROQ_API_KEY` | empty | Optional Groq key |
+| `MAX_CLOUD_CALLS_PER_DAY` | `200` | Daily cap for cloud AI calls |
+| `DAILY_AI_BUDGET_USD` | `1.00` | Soft budget shown in dashboard/status |
+| `FALLBACK_TO_LOCAL_ON_LIMIT` | `true` | Use local fallback on API limit/error |
+| `ALLOW_AUTOSEND` | `false` | Keep false unless intentionally enabling safe autopilot |
+| `ENABLED_AGENTS` | `whatsapp` | Example: `whatsapp,telegram,wechat` |
 | `BROWSER_HEADLESS` | `false` | Set true after login is stable |
 | `SESSION_DIR` | `./data/sessions` | Persistent browser session folder |
 | `SCREENSHOT_ON_ERROR` | `false` | Emergency debugging only |
 | `LIVE_SCREENSHOT` | `false` | Keep off in free-cost mode |
 | `OCR_ENABLED` | `false` | Keep off; not needed for normal reading |
+| `TRANSCRIBE_ENABLED` | `false` | Enable local voice transcription |
+| `TRANSCRIBE_BACKEND` | `auto` | `auto`, `whisper_cpp`, `python_whisper`, `http`, or `command` |
+| `TRANSCRIBE_COMMAND` | empty | Custom transcription command |
+| `TRANSCRIBE_HTTP_URL` | empty | Local transcription server URL |
 | `BRIDGE_POLL_MS` | `5000` | Outgoing queue polling interval |
 | `HEALTH_CHECK_INTERVAL` | `60` | Agent health interval in seconds |
-
----
-
-## Dashboard Actions
-
-For every incoming message, the dashboard should show:
-
-```txt
-Contact · Channel
-Incoming message
-
-Decision:
-Reply now / Wait / No reply / Repair / End
-
-Why:
-Short explanation
-
-Best move:
-What to do next
-
-Avoid:
-What not to do
-
-Reply options:
-1. Casual
-2. Playful
-3. Genuine / repair
-
-Actions:
-Send
-Edit
-Wait
-Skip
-```
-
----
-
-## Safety Principles
-
-ReplyWise is a human-in-the-loop communication assistant.
-
-It should not be used for:
-
-- Spam
-- Harassment
-- Manipulation
-- Impersonation
-- Fully autonomous messaging
-- Bypassing platform enforcement
-- Sending messages without human review
-
-Hard rules:
-
-```txt
-No auto-send by default.
-No stealth/bypass logic.
-No screenshot reading loop.
-No OCR-based message reading.
-No official API-key dependency for MVP, including no WeChat Official Account API key for browser-agent mode.
-No reply after clear rejection or boundary.
-```
-
----
-
-## Platform Risk Notice
-
-Browser automation may violate the terms of service of some platforms. Sessions can break, selectors can change, and accounts may face restrictions.
-
-Use this project for personal experimentation and local prototyping only. Prefer read-only mode during testing. Use a secondary account where appropriate.
-
----
-
-## Why Not Many Channels?
-
-The v0.1 goal is not to support every messaging app. WeChat is included as an experimental browser-agent channel, but WhatsApp should remain the primary proof channel.
-
-The v0.1 goal is:
-
-```txt
-One or two stable channels, with WeChat available as experimental.
-Free-cost.
-Reliable.
-Manual approval.
-Good judgment.
-No bad replies.
-```
-
-Additional platforms can be added later after the core product is proven.
-
----
-
-## Roadmap
-
-### v0.1 — WhatsApp Proof
-
-- WhatsApp browser/session agent
-- Local dashboard
-- Should-I-reply engine
-- Manual approval
-- Local templates
-- Energy matching
-- Anti-cringe filter
-
-### v0.2 — Telegram
-
-- Telegram Web browser agent
-- WebSocket + DOM watcher
-- Same approval flow
-- Same memory system
-
-### v0.2.5 — Experimental WeChat
-
-- WeChat Web browser agent
-- QR login through WeChat Web
-- DOM-based message watcher
-- Same per-contact memory and approval flow
-- Treat as experimental because WeChat Web availability and selectors may vary by account/region
-
-### v0.3 — Better Intelligence
-
-- Contact-specific rules
-- Conversation temperature graph
-- Reply feedback learning
-- Repair mode
-- Do-not-reply engine improvements
-
-### v0.4 — Local Desktop App
-
-- Electron wrapper
-- Local encrypted database
-- One-command startup
-- Mobile-friendly local web UI
-
-### v0.5 — Optional Smart Mode
-
-- Ollama integration
-- User-provided Gemini key option
-- Strict budget manager
-- Local fallback when quota ends
-
----
-
-## Development Scripts
-
-Common scripts:
-
-```bash
-npm run dev
-npm run reset
-npm run seed
-npm run agents
-npm run agent:whatsapp
-npm run agent:telegram
-npm run agent:wechat
-npm run agent:all
-npm test
-```
 
 ---
 
@@ -583,21 +470,109 @@ Option 3:
 
 ---
 
+## Development Scripts
+
+```bash
+npm run setup
+npm run dev
+npm run reset
+npm run seed
+npm run agents
+npm run agent:whatsapp
+npm run agent:telegram
+npm run agent:wechat
+npm run agent:all
+npm run syntax
+npm run style-test
+npm run v7-test
+npm run v71-test
+npm run easy-test
+npm test
+```
+
+---
+
+## Verification Checklist
+
+```txt
+✅ Same message to 4 contacts gives 4 different reply styles
+✅ Audio-only message does not crash ingest pipeline
+✅ Group message without mention gives no-reply decision
+✅ Direct group mention gives short neutral reply
+✅ Contact custom persona overrides global persona
+✅ API provider limit falls back to local safe mode
+✅ WhatsApp/Telegram/WeChat dashboard controls appear correctly
+```
+
+---
+
+## Safety
+
+ReplyWise is a human-in-the-loop communication assistant.
+
+Do not use it for:
+
+- Spam
+- Harassment
+- Manipulation
+- Impersonation
+- Fully autonomous messaging
+- Bypassing platform enforcement
+- Sending messages without human review
+
+Hard rules:
+
+```txt
+No auto-send by default.
+No stealth/bypass logic.
+No screenshot reading loop.
+No OCR-based message reading.
+No official messaging API-key dependency for browser-agent MVP.
+No reply after clear rejection or boundary.
+No flirty or romantic replies in group chats.
+No blind replies to audio/video/file messages without enough context.
+Stop cloud AI calls when daily limit is reached.
+Fallback to local safe mode when API providers fail.
+```
+
+---
+
+## Platform Risk Notice
+
+Browser automation may violate the terms of service of some platforms. Sessions can break, selectors can change, and accounts may face restrictions.
+
+Use this project for personal experimentation and local prototyping only. Prefer read-only mode during testing. Use a secondary account where appropriate.
+
+---
+
+## Roadmap
+
+| Version | Focus |
+|---|---|
+| v0.1 | WhatsApp proof, dashboard, local decision engine |
+| v0.2 | Telegram support |
+| v0.2.5 | Experimental WeChat |
+| v0.3 | Better memory, repair mode, feedback learning |
+| v0.4 | Desktop app / local encrypted database |
+| v0.5 | Easy AI mode, Gemini/OpenRouter/Groq fallback |
+| v0.6 | Voice/media/group intelligence |
+
+---
+
 ## Contributing
 
-Contributions should follow the product principle:
+Reliability and judgment are more important than channel count.
 
-> Reliability and judgment are more important than channel count.
+Before adding new platforms, improve:
 
-Before adding a new platform, improve:
-
+- Decision quality
+- Contact memory
+- Safety rules
 - WhatsApp reliability
 - Telegram reliability
 - WeChat experimental reliability
-- Decision quality
-- Local memory
-- Safety rules
-- Mobile dashboard UX
+- Easy setup for non-technical users
+- Voice/group/persona test coverage
 
 ---
 

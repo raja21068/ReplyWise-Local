@@ -63,14 +63,16 @@ app.get('/', async (req, res, next) => {
       db.getAgentStatuses(),
       db.getCostSummary(),
     ]);
+    const providerStatus = typeof ai.getProviderStatus === 'function' ? ai.getProviderStatus() : null;
     res.send(renderDashboard({
       contacts,
       pendingSuggestions,
       outgoingQueue,
       agentStatuses,
       costSummary,
+      providerStatus,
       env: {
-        aiProvider: process.env.AI_PROVIDER || 'local',
+        aiProvider: process.env.AI_PROVIDER || 'easy',
         enabledAgents: process.env.ENABLED_AGENTS || 'whatsapp,telegram',
         screenshots: screenshotsEnabled(),
         dryRun: boolEnv('DRY_RUN_SEND', false),
@@ -357,6 +359,10 @@ app.post('/api/ai/test', async (req, res, next) => {
     const result = await ai.testCurrentProvider();
     res.json(result);
   } catch (err) { next(err); }
+});
+
+app.get('/api/ai/status', (req, res) => {
+  res.json({ ok: true, status: typeof ai.getProviderStatus === 'function' ? ai.getProviderStatus() : null });
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -692,7 +698,7 @@ function esc(value) {
     .replace(/'/g, '&#39;');
 }
 
-function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentStatuses, costSummary, env }) {
+function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentStatuses, costSummary, providerStatus, env }) {
   const agentCards = (env.channels || ['whatsapp', 'telegram', 'wechat']).map(ch => {
     const a = (agentStatuses || []).find(x => x.channel === ch) || { channel: ch, status: 'not_started' };
     const icon = a.status === 'active' ? '🟢' : a.status === 'login_required' ? '🟡' : '⚪';
@@ -768,9 +774,9 @@ function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentSta
   section{margin:18px 0} h3{margin:0 0 8px} table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden}td,th{padding:9px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}th{background:#f3f4f6}textarea{font-family:inherit}.sandbox input,.sandbox select{border:1px solid var(--line);border-radius:10px;padding:10px;margin:4px 0;width:100%}.empty{padding:18px;border:1px dashed #bbb;border-radius:16px;text-align:center;color:var(--muted)}
   @media (max-width:720px){.grid{grid-template-columns:1fr}.hero h1{font-size:26px}.custom{flex-direction:column}.option-top{align-items:flex-start;flex-direction:column}}
 </style></head><body><div class="wrap">
-  <div class="hero"><h1>ReplyWise Local</h1><p class="tagline">It does not just write replies. It tells you whether replying is a good idea.</p><p>Free-cost mode · AI: ${esc(env.aiProvider)} · Agents: ${esc(env.enabledAgents)} · Screenshots: ${env.screenshots ? 'debug only' : 'off'} · Auto-choose: ${env.autoChoose ? 'on' : 'off'} · Auto-send: ${env.autoSend ? 'on' : 'off'} · Dry run: ${env.dryRun ? 'on' : 'off'}</p></div>
+  <div class="hero"><h1>ReplyWise Local</h1><p class="tagline">It does not just write replies. It tells you whether replying is a good idea.</p><p>Free-cost mode · AI: ${esc(env.aiProvider)}${providerStatus?.easyMode ? ' / easy chain: ' + esc((providerStatus.configuredChain || ['local']).join(' → ')) : ''} · Agents: ${esc(env.enabledAgents)} · Screenshots: ${env.screenshots ? 'debug only' : 'off'} · Auto-choose: ${env.autoChoose ? 'on' : 'off'} · Auto-send: ${env.autoSend ? 'on' : 'off'} · Dry run: ${env.dryRun ? 'on' : 'off'}</p></div>
 
-  <section class="grid">${agentCards}<div class="mini-card"><strong>💸 Cost today</strong><br><span>$${Number(costSummary.estimatedCostUsd || 0).toFixed(2)}</span><p class="muted">Local actions: ${esc(costSummary.localActions)} · Screenshots: 0 · Cloud AI: 0</p></div><div class="mini-card"><strong>🧠 Smart Autopilot</strong><br><span>${env.autoSend ? 'Safe auto-send enabled' : env.autoChoose ? 'Auto-choose only' : 'Manual'}</span><p class="muted">Risky messages always require review. Official messaging API keys: none.</p></div></section>
+  <section class="grid">${agentCards}<div class="mini-card"><strong>💸 Cost today</strong><br><span>$${Number(costSummary.estimatedCostUsd || 0).toFixed(2)}</span><p class="muted">Local actions: ${esc(costSummary.localActions)} · Screenshots: 0</p></div><div class="mini-card"><strong>☁️ AI easy mode</strong><br><span>${esc((providerStatus?.configuredChain || ['local']).join(' → '))}</span><p class="muted">Cloud calls today: ${esc(providerStatus?.cloudUsage?.totalCloudCalls || 0)}/${esc(providerStatus?.cloudUsage?.maxCloudCallsPerDay || 0)} · local fallback always on</p></div><div class="mini-card"><strong>🧠 Smart Autopilot</strong><br><span>${env.autoSend ? 'Safe auto-send enabled' : env.autoChoose ? 'Auto-choose only' : 'Manual'}</span><p class="muted">Risky messages always require review. Official messaging API keys: none.</p></div></section>
 
   <section><h3>Pending Decisions <span id="live-indicator" class="muted" style="font-size:11px;font-weight:normal">⚪ connecting…</span></h3>${suggestionCards}</section>
 

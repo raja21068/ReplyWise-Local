@@ -567,3 +567,14 @@ npm run style-test  ✅
 ```
 
 Live browser login tests were not run because they require real WhatsApp/Telegram/WeChat sessions.
+
+## v7.2 — Easy User Setup Patch
+
+- Default AI mode changed to `AI_PROVIDER=easy`.
+- Added provider chain fallback: `gemini,openrouter,groq,local`.
+- Added direct Gemini/OpenRouter/Groq aliases through the OpenAI-compatible client.
+- Added daily cloud call cap with local fallback: `MAX_CLOUD_CALLS_PER_DAY`.
+- Added `npm run setup` onboarding wizard.
+- Added `/api/ai/status` and dashboard cloud usage display.
+- Added `npm run easy-test` to prove the app still works with no Ollama and no API key.
+- Ollama is now optional, not part of the normal user path.
