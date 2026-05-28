@@ -1,116 +1,94 @@
+'use strict';
+
 /**
- * WhatsApp Agent v3 — whatsapp-web.js with media handling + per-chat autopilot.
+ * WhatsApp Agent — class-based, compatible with AgentManager
+ * ────────────────────────────────────────────────────────────
+ * • Extends EventEmitter (emits 'qr', 'disconnected', 'login_required')
+ * • Exposes start(), stop(), healthy, getQrData()
+ * • 60s timeout on server POST + 3 automatic retries
+ * • Auto-polls outgoing queue and sends approved messages
  *
- * New in v3 (merged from LLM-for-Whatsapp)
- * ────────────────────────────────────────
- * • Detects message media type (image / audio / video / file / sticker)
- * • Downloads media when WHATSAPP_DOWNLOAD_MEDIA=true (default: false to save disk)
- * • Populates media_type + media_summary on the ingest payload so the Decision Engine
- *   can make smarter routing choices without needing the actual bytes.
- * • Sticker-only messages are ingested as media_type=sticker (not silently dropped).
- * • Error path for failed sends now marks the outgoing item as 'failed' in the DB.
- *
- * Merged from LLM-for-Whatsapp
- * ─────────────────────────────
- * • Per-chat auto_reply_enabled toggle — contacts can be individually opted in/out
- * • Reply delay modes: instant | normal | random (respects REPLY_DELAY_MODE env or per-contact rule)
- * • isForwarded and isStarred flags passed through to ingest metadata
- * • Proper session destroy + auth directory cleanup on logout (logoutAndCleanup())
- * • Group message support: passes author field for group chats
+ * Improvements over v1:
+ *   ✓ Media download + classifyAttachment() → real risk scores & OCR
+ *   ✓ message_ack  → delivery/read receipts posted to server
+ *   ✓ message_revoked_me → deleted-message notifications
+ *   ✓ reaction     → emoji reaction events
+ *   ✓ mentioned_me → correctly resolved from msg.mentionedIds
+ *   ✓ location     → lat/lng extracted from Location messages
+ *   ✓ vCards       → contact-card bodies forwarded as text
+ *   ✓ links        → first URL extracted and attached
+ *   ✓ isGif        → gifs classified separately from video
  */
 
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
-const qrcode = require('qrcode-terminal');
-const axios = require('axios');
-const path = require('path');
-const fs = require('fs');
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const qrcode       = require('qrcode-terminal');
+const axios        = require('axios');
+const path         = require('path');
+const fs           = require('fs');
 const EventEmitter = require('events');
 
-// ── Reply delay (merged from LLM-for-Whatsapp) ───────────────
+const { classifyAttachment, summarizeForPrompt } = require('../media/media-handler');
 
-const REPLY_DELAY_DEFAULTS = {
-  instant: 0,
-  normal:  1500,   // ~1.5 s — feels human
-  random:  null,   // computed at runtime
-};
-
-function computeReplyDelayMs(contactRules = {}) {
-  const mode = contactRules.reply_delay_mode
-    || process.env.REPLY_DELAY_MODE
-    || 'normal';
-
-  if (mode === 'instant') return 0;
-
-  if (mode === 'random') {
-    const min = Number(process.env.REPLY_DELAY_RANDOM_MIN_MS || 1000);
-    const max = Number(process.env.REPLY_DELAY_RANDOM_MAX_MS || 6000);
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-  }
-
-  // 'normal' or per-contact fixed
-  const fixed = Number(contactRules.reply_delay_seconds || 0) * 1000;
-  return fixed > 0 ? fixed : REPLY_DELAY_DEFAULTS.normal;
-}
-
-// ── Media type mapping from whatsapp-web.js message types ────
+// ─── Media type map ────────────────────────────────────────────
 const WA_TYPE_MAP = {
+  chat:     'text',
   image:    'image',
   video:    'video',
+  gif:      'gif',
   audio:    'audio',
   voice:    'audio',
   ptt:      'audio',
   sticker:  'sticker',
   document: 'file',
-  unknown:  'unknown',
+  location: 'location',
+  vcard:    'vcard',
+  multi_vcard: 'vcard',
 };
 
 function resolveMediaType(msg) {
+  if (msg.isGif) return 'gif';
   if (!msg.hasMedia && msg.type === 'chat') return 'text';
   return WA_TYPE_MAP[msg.type] || (msg.hasMedia ? 'unknown' : 'text');
 }
 
-async function buildMediaSummary(msg) {
-  // Returns a short human-readable hint without downloading the file.
-  if (!msg.hasMedia) return null;
-
-  const type = resolveMediaType(msg);
-  const filename = msg._data?.filename || msg._data?.caption || null;
-  const caption   = msg.body || msg._data?.caption || null;
-  const duration  = msg._data?.duration ? `${msg._data.duration}s` : null;
-  const mimeType  = msg._data?.mimetype || null;
-
-  const parts = [];
-  if (filename)  parts.push(filename);
-  if (caption)   parts.push(`"${caption.slice(0, 60)}"`);
-  if (duration)  parts.push(`duration: ${duration}`);
-  if (mimeType && !filename) parts.push(mimeType);
-
-  return parts.length ? parts.join(' · ') : null;
+// ─── Helper: POST with retries ─────────────────────────────────
+async function postWithRetry(url, data, { timeout = 60_000, retries = 3 } = {}) {
+  let lastErr;
+  for (let i = 1; i <= retries; i++) {
+    try {
+      const res = await axios.post(url, data, { timeout });
+      return res.data;
+    } catch (err) {
+      lastErr = err;
+      if (i < retries) await new Promise(r => setTimeout(r, 2000 * i));
+    }
+  }
+  throw lastErr;
 }
 
+// ─── Agent class ───────────────────────────────────────────────
 class WhatsAppAgent extends EventEmitter {
   constructor() {
     super();
-    this.channel = 'whatsapp';
-    this.name = 'WhatsApp';
-    this.running = false;
-    this.healthy = false;
-    this.lastError = null;
-    this.client = null;
-    this.qrData = null;
+    this.channel    = 'whatsapp';
+    this.name       = 'WhatsApp';
+    this.healthy    = false;
+    this.running    = false;
+    this.client     = null;
+    this.qrData     = null;
+    this.lastError  = null;
 
     this.orchestratorUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
-    this.sessionDir = path.resolve(process.env.SESSION_DIR || './data/sessions', 'whatsapp');
-    this.outgoingPollMs = Number(process.env.BRIDGE_POLL_MS) || 3000;
-    this.actionDelayMin = Number(process.env.ACTION_DELAY_MIN) || 500;
-    this.actionDelayMax = Number(process.env.ACTION_DELAY_MAX) || 2000;
-    this.downloadMedia = process.env.WHATSAPP_DOWNLOAD_MEDIA === 'true';
-    this.mediaDir = path.resolve(process.env.MEDIA_DIR || './data/media', 'whatsapp');
+    this.sessionDir      = path.resolve(process.env.SESSION_DIR || './data/sessions', 'whatsapp');
+    this.pollMs          = Number(process.env.BRIDGE_POLL_MS) || 3000;
+
+    // Map whatsapp msgId → internal outgoing message id, for ack tracking
+    this._pendingAcks = new Map();
 
     fs.mkdirSync(this.sessionDir, { recursive: true });
-    if (this.downloadMedia) fs.mkdirSync(this.mediaDir, { recursive: true });
   }
 
+  // ── Public: start ────────────────────────────────────────────
   async start() {
     this.log('Starting WhatsApp agent...');
     this.running = true;
@@ -122,104 +100,111 @@ class WhatsAppAgent extends EventEmitter {
         args: [
           '--no-sandbox',
           '--disable-dev-shm-usage',
-          '--disable-gpu',
           '--disable-setuid-sandbox',
+          '--disable-gpu',
         ],
       },
     });
 
-    // ── QR code for first-time login ──────────────────────────
+    // ── Auth events ──────────────────────────────────────────
     this.client.on('qr', (qr) => {
       this.qrData = qr;
-      this.log('QR code received — scan with your phone');
+      this.log('Scan this QR code with WhatsApp → Linked Devices → Link a Device:');
       qrcode.generate(qr, { small: true });
       this.reportStatus('login_required');
       this.emit('qr', qr);
+      this.emit('login_required');
     });
 
-    // ── Authenticated ─────────────────────────────────────────
     this.client.on('authenticated', () => {
-      this.log('Authenticated successfully');
+      this.log('✓ Authenticated');
       this.qrData = null;
     });
 
-    // ── Ready ─────────────────────────────────────────────────
-    this.client.on('ready', () => {
-      this.log('Client is ready — listening for messages');
-      this.healthy = true;
-      this.reportStatus('active');
-      this.startOutgoingLoop();
+    this.client.on('auth_failure', (msg) => {
+      this.log(`✗ Auth failed: ${msg}`);
+      this.healthy   = false;
+      this.lastError = msg;
+      this.reportStatus('error', msg);
     });
 
-    // ── Incoming messages (text + media) ──────────────────────
+    // ── Ready — start outgoing loop ──────────────────────────
+    this.client.on('ready', () => {
+      const name = this.client?.info?.pushname || this.client?.info?.wid?.user || 'unknown';
+      this.log(`✓ Ready — logged in as ${name}`);
+      this.healthy = true;
+      this.reportStatus('active');
+      this._startOutgoingLoop();
+    });
+
+    // ── Incoming messages ────────────────────────────────────
     this.client.on('message', async (msg) => {
-      if (msg.fromMe) return;
-      if (msg.isStatus) return;
+      if (msg.fromMe || msg.isStatus) return;
+      await this._handleIncoming(msg);
+    });
+
+    // ── Delivery / read receipts ─────────────────────────────
+    // ack values: 0=pending, 1=sent, 2=received (device), 3=read, 4=played
+    this.client.on('message_ack', async (msg, ack) => {
+      if (!msg.fromMe) return;
+      const internalId = this._pendingAcks.get(msg.id._serialized);
+      if (!internalId) return;
+
+      const ackLabel = ['pending', 'sent', 'delivered', 'read', 'played'][ack] || String(ack);
+      this.log(`✓ ACK ${ackLabel} — msg ${msg.id._serialized}`);
 
       try {
-        const contact = await msg.getContact();
-        const displayName = contact.pushname || contact.name || msg.from;
-        const mediaType   = resolveMediaType(msg);
-        const mediaSummary = await buildMediaSummary(msg);
+        await axios.post(
+          `${this.orchestratorUrl}/api/bridge/outgoing/${internalId}/ack`,
+          { ack, ack_label: ackLabel, wa_msg_id: msg.id._serialized },
+          { timeout: 5000 }
+        );
+      } catch { /* non-critical */ }
 
-        // Determine body: for media-only messages (sticker, image without caption) use empty string
-        const body = String(msg.body || '').trim();
+      // Clean up once fully read/played
+      if (ack >= 3) this._pendingAcks.delete(msg.id._serialized);
+    });
 
-        this.log(`← [${displayName}] [${mediaType}]: ${(body || `<${mediaType}>`).slice(0, 80)}`);
-
-        // Optionally download media to disk
-        let localMediaPath = null;
-        if (this.downloadMedia && msg.hasMedia) {
-          try {
-            const media = await msg.downloadMedia();
-            if (media && media.data) {
-              const ext = media.mimetype?.split('/')?.[1]?.split(';')?.[0] || 'bin';
-              const fname = `${msg.id?.id || Date.now()}.${ext}`;
-              localMediaPath = path.join(this.mediaDir, fname);
-              fs.writeFileSync(localMediaPath, Buffer.from(media.data, 'base64'));
-            }
-          } catch (e) {
-            this.log(`Media download failed: ${e.message}`);
-          }
-        }
-
-        const chat = await msg.getChat().catch(() => null);
-        const myJid = this.client?.info?.wid?._serialized || this.client?.info?.wid?.user || null;
-        const mentionedIds = Array.isArray(msg.mentionedIds) ? msg.mentionedIds : [];
-        const mentionedMe = Boolean(myJid && mentionedIds.some(id => String(id).includes(String(myJid).replace('@c.us', ''))));
-        let quotedFromMe = false;
-        if (msg.hasQuotedMsg) {
-          try {
-            const quoted = await msg.getQuotedMessage();
-            quotedFromMe = Boolean(quoted?.fromMe);
-          } catch { /* ignore */ }
-        }
-
-        await axios.post(`${this.orchestratorUrl}/api/ingest/whatsapp`, {
-          from: msg.from,
-          externalContactId: msg.from,
-          displayName,
-          body: body || `[${mediaType}]`,
-          timestamp: msg.timestamp ? msg.timestamp * 1000 : Date.now(),
-          media_type: mediaType,
-          media_summary: mediaSummary,
-          local_media_path: localMediaPath,
-          has_media: msg.hasMedia,
-          // Merged from LLM-for-Whatsapp
-          is_forwarded: msg.isForwarded || false,
-          is_starred: msg.isStarred || false,
-          author: msg.author || null,       // group chats: who sent it
-          is_group: chat?.isGroup || false,
-          mentioned_me: mentionedMe,
-          reply_to_me: quotedFromMe,
-        }, { timeout: 15000 });
-
+    // ── Revoked / deleted messages ───────────────────────────
+    this.client.on('message_revoke_me', async (msg) => {
+      this.log(`↩ Message revoked by ${msg.from}: ${msg.id._serialized}`);
+      try {
+        await axios.post(
+          `${this.orchestratorUrl}/api/ingest/whatsapp/revoked`,
+          {
+            wa_msg_id: msg.id._serialized,
+            from:      msg.from,
+            timestamp: Date.now(),
+          },
+          { timeout: 10_000 }
+        );
       } catch (err) {
-        this.log(`Error processing incoming: ${err.message}`);
+        this.log(`✗ Revoke notify failed: ${err.message}`);
       }
     });
 
-    // ── Disconnected ──────────────────────────────────────────
+    // ── Emoji reactions ──────────────────────────────────────
+    this.client.on('message_reaction', async (reaction) => {
+      // reaction: { id, senderId, reaction (emoji string), msgId, read, orphan }
+      if (!reaction.reaction) return; // empty = reaction removed
+      this.log(`💬 Reaction "${reaction.reaction}" on ${reaction.msgId._serialized} from ${reaction.senderId}`);
+      try {
+        await axios.post(
+          `${this.orchestratorUrl}/api/ingest/whatsapp/reaction`,
+          {
+            wa_msg_id:  reaction.msgId._serialized,
+            from:       reaction.senderId,
+            emoji:      reaction.reaction,
+            timestamp:  Date.now(),
+          },
+          { timeout: 10_000 }
+        );
+      } catch (err) {
+        this.log(`✗ Reaction notify failed: ${err.message}`);
+      }
+    });
+
+    // ── Disconnected ─────────────────────────────────────────
     this.client.on('disconnected', (reason) => {
       this.log(`Disconnected: ${reason}`);
       this.healthy = false;
@@ -227,165 +212,214 @@ class WhatsAppAgent extends EventEmitter {
       this.emit('disconnected', reason);
     });
 
-    this.client.on('auth_failure', (msg) => {
-      this.log(`Auth failure: ${msg}`);
-      this.healthy = false;
-      this.lastError = msg;
-      this.reportStatus('error', msg);
-    });
-
     await this.client.initialize();
   }
 
-  // ── Per-chat autopilot toggle (merged from LLM-for-Whatsapp) ─
-
-  /**
-   * Called by the orchestrator API when the user flips the toggle on a contact.
-   * Stores the preference in the DB via REST; the agent re-reads it on next ingest.
-   */
-  async setAutoReplyForContact(externalContactId, enabled) {
-    try {
-      await axios.post(`${this.orchestratorUrl}/api/contacts/by-external/${encodeURIComponent(externalContactId)}/auto-reply`,
-        { enabled, channel: 'whatsapp' },
-        { timeout: 5000 }
-      );
-      this.log(`Auto-reply ${enabled ? 'enabled' : 'disabled'} for ${externalContactId}`);
-    } catch (err) {
-      this.log(`setAutoReplyForContact failed: ${err.message}`);
-    }
-  }
-
-  // ── Proper session cleanup (merged from LLM-for-Whatsapp) ──
-
-  /**
-   * Destroys the whatsapp-web.js client AND removes the local auth directory,
-   * forcing a fresh QR scan on next start. Useful for account switching.
-   */
-  async logoutAndCleanup() {
-    this.log('Logging out and clearing session...');
-    this.running = false;
-    if (this.client) {
-      try { await this.client.destroy(); } catch { /* already destroyed */ }
-      this.client = null;
-    }
-    // Remove auth data so next start requires a fresh QR scan
-    const authPath = path.resolve(this.sessionDir, 'session-default');
-    try {
-      if (require('fs').existsSync(authPath)) {
-        require('fs').rmSync(authPath, { recursive: true, force: true });
-        this.log(`Auth directory removed: ${authPath}`);
-      }
-    } catch (e) {
-      this.log(`Could not remove auth dir: ${e.message}`);
-    }
-    await this.reportStatus('logged_out');
-    this.log('Logout complete');
-  }
-
+  // ── Public: stop ─────────────────────────────────────────────
   async stop() {
     this.log('Stopping...');
     this.running = false;
+    this.healthy = false;
     if (this.client) {
-      try { await this.client.destroy(); } catch { /* already destroyed */ }
+      try { await this.client.destroy(); } catch { /* ignore */ }
+      this.client = null;
     }
     this.reportStatus('stopped');
   }
 
-  // ── Send message via whatsapp-web.js API ──────────────────
-
-  async sendMessageViaUI(page, { externalContactId, body }) {
-    if (!this.client) throw new Error('Client not initialized');
-    await this.randomDelay(this.actionDelayMin, this.actionDelayMax);
-    await this.client.sendMessage(externalContactId, body);
-  }
-
-  // ── Outgoing queue polling ────────────────────────────────
-
-  startOutgoingLoop() {
-    const poll = async () => {
-      if (!this.running) return;
-      try {
-        const res = await axios.get(`${this.orchestratorUrl}/api/bridge/pending-outgoing`, {
-          params: { channel: 'whatsapp', limit: 5 },
-          timeout: 10000,
-        });
-        const items = res.data?.outgoing || [];
-        for (const item of items) {
-          try {
-            await this.sendMessageViaUI(null, {
-              externalContactId: item.external_contact_id || item.externalContactId,
-              body: item.body,
-            });
-            await axios.post(
-              `${this.orchestratorUrl}/api/bridge/outgoing/${item.id}/sent`,
-              {},
-              { timeout: 10000 }
-            );
-            this.log(`→ Sent to ${item.display_name || item.external_contact_id}`);
-          } catch (err) {
-            this.log(`Send failed ${item.id}: ${err.message}`);
-            try {
-              await axios.post(
-                `${this.orchestratorUrl}/api/bridge/outgoing/${item.id}/failed`,
-                { error: err.message },
-                { timeout: 5000 }
-              );
-            } catch { /* ignore */ }
-          }
-        }
-      } catch (err) {
-        if (err.code !== 'ECONNREFUSED') this.log(`Outgoing poll error: ${err.message}`);
-      }
-      if (this.running) setTimeout(poll, this.outgoingPollMs);
-    };
-    setTimeout(poll, 2000);
-  }
-
-  // ── Utility ───────────────────────────────────────────────
-
-  async reportStatus(status, errorLog = null) {
+  // ── Public: logout + clear session ───────────────────────────
+  async logoutAndCleanup() {
+    this.log('Logging out and clearing session...');
+    await this.stop();
+    const authPath = path.resolve(this.sessionDir, 'session-default');
     try {
-      await axios.post(`${this.orchestratorUrl}/api/agents/${this.channel}/status`, {
-        status, errorLog,
-      }, { timeout: 5000 });
-    } catch { /* orchestrator might not be up */ }
+      if (fs.existsSync(authPath)) {
+        fs.rmSync(authPath, { recursive: true, force: true });
+        this.log(`Session cleared: ${authPath}`);
+      }
+    } catch (e) {
+      this.log(`Could not clear session: ${e.message}`);
+    }
+    await this.reportStatus('logged_out');
   }
 
-  randomInt(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-  }
-
-  async randomDelay(min, max) {
-    return new Promise((r) => setTimeout(r, this.randomInt(min, max)));
-  }
-
+  // ── Public: getQrData ─────────────────────────────────────────
   getQrData() { return this.qrData; }
 
-  async isLoggedIn() {
+  // ── Handle incoming message ───────────────────────────────────
+  async _handleIncoming(msg) {
+    // ── Resolve display name ──────────────────────────────────
+    let displayName = msg.from;
+    let fromContext = 'unknown';
     try {
-      const state = await this.client?.getState();
-      return state === 'CONNECTED';
-    } catch {
-      return false;
+      const contact = await msg.getContact();
+      displayName = contact.pushname || contact.name || msg.from;
+      // A contact with a name saved is "known"
+      fromContext = (contact.name || contact.pushname) ? 'known' : 'unknown';
+    } catch { /* ignore */ }
+
+    // ── Media: download + classify ────────────────────────────
+    let mediaBuffer = null;
+    let mediaResult = { media_type: 'text', media_summary: null, risk_level: 'low', ocr_text: null };
+
+    if (msg.hasMedia) {
+      try {
+        const dl = await msg.downloadMedia();
+        if (dl?.data) {
+          mediaBuffer = Buffer.from(dl.data, 'base64');
+        }
+      } catch (err) {
+        this.log(`⚠ Media download failed: ${err.message}`);
+      }
+
+      mediaResult = await classifyAttachment(msg, {
+        runOcr:      process.env.OCR_ENABLED === 'true',
+        mediaBuffer,
+        fromContext,
+      });
+    }
+
+    const type    = resolveMediaType(msg);
+    const summary = mediaResult.media_summary || null;
+
+    // ── Body: enrich for non-text types ──────────────────────
+    let body = String(msg.body || '').trim();
+
+    if (type === 'location' && msg.location) {
+      const loc = msg.location;
+      body = body || `[location: ${loc.latitude},${loc.longitude}${loc.description ? ' — ' + loc.description : ''}]`;
+    } else if ((type === 'vcard') && msg.vCards?.length) {
+      body = body || msg.vCards.map(v => `[vcard: ${v.slice(0, 120)}]`).join('\n');
+    } else if (!body) {
+      const promptLabel = summarizeForPrompt(mediaResult);
+      body = promptLabel || `[${type}]`;
+    }
+
+    // ── First URL in message ──────────────────────────────────
+    let firstLink = null;
+    try {
+      if (msg.links?.length) firstLink = msg.links[0].link;
+    } catch { /* ignore */ }
+
+    this.log(`← [${displayName}] [${type}]: ${body.slice(0, 80)}`);
+
+    // ── Is quoted message from me? ────────────────────────────
+    let replyToMe = false;
+    if (msg.hasQuotedMsg) {
+      try {
+        const quoted = await msg.getQuotedMessage();
+        replyToMe = Boolean(quoted?.fromMe);
+      } catch { /* ignore */ }
+    }
+
+    // ── Is this a group chat? ─────────────────────────────────
+    let isGroup = false;
+    try {
+      const chat = await msg.getChat();
+      isGroup = Boolean(chat?.isGroup);
+    } catch { /* ignore */ }
+
+    // ── Was I mentioned? ──────────────────────────────────────
+    let mentionedMe = false;
+    try {
+      const myWid = this.client?.info?.wid?._serialized;
+      if (myWid && Array.isArray(msg.mentionedIds)) {
+        mentionedMe = msg.mentionedIds.includes(myWid);
+      }
+    } catch { /* ignore */ }
+
+    // ── POST to server ────────────────────────────────────────
+    try {
+      const result = await postWithRetry(
+        `${this.orchestratorUrl}/api/ingest/whatsapp`,
+        {
+          from:              msg.from,
+          externalContactId: msg.from,
+          displayName,
+          body,
+          timestamp:     msg.timestamp ? msg.timestamp * 1000 : Date.now(),
+          media_type:    type,
+          media_summary: summary,
+          risk_level:    mediaResult.risk_level,
+          ocr_text:      mediaResult.ocr_text  || null,
+          first_link:    firstLink,
+          is_forwarded:  msg.isForwarded || false,
+          is_starred:    msg.isStarred   || false,
+          is_gif:        msg.isGif       || false,
+          is_group:      isGroup,
+          author:        msg.author      || null,
+          reply_to_me:   replyToMe,
+          mentioned_me:  mentionedMe,
+          wa_msg_id:     msg.id._serialized,
+        }
+      );
+      this.log(`✓ Processed — decision: ${result?.decision || '?'} | autoSent: ${result?.autoSent || false}`);
+    } catch (err) {
+      const detail = err.response?.data?.error || err.response?.data || '';
+      this.log(`✗ Error processing message: ${err.message}${detail ? ' — ' + JSON.stringify(detail) : ''}`);
     }
   }
 
-  log(msg) {
-    const ts = new Date().toISOString().slice(11, 19);
-    console.log(`[${ts}] [WhatsApp] ${msg}`);
-  }
-}
+  // ── Outgoing queue polling ────────────────────────────────────
+  _startOutgoingLoop() {
+    const poll = async () => {
+      if (!this.running) return;
+      try {
+        const res = await axios.get(
+          `${this.orchestratorUrl}/api/bridge/pending-outgoing`,
+          { params: { channel: 'whatsapp', limit: 5 }, timeout: 10_000 }
+        );
+        for (const item of (res.data?.outgoing || [])) {
+          const to   = item.external_contact_id || item.externalContactId;
+          const text = item.body;
+          try {
+            const sentMsg = await this.client.sendMessage(to, text);
 
-// ── Standalone launch ─────────────────────────────────────────
-if (require.main === module) {
-  require('dotenv').config();
-  const agent = new WhatsAppAgent();
-  agent.start().catch((err) => {
-    console.error('WhatsApp agent failed:', err);
-    process.exit(1);
-  });
-  process.on('SIGINT', () => agent.stop().then(() => process.exit(0)));
-  process.on('SIGTERM', () => agent.stop().then(() => process.exit(0)));
+            // Register for ack tracking
+            if (sentMsg?.id?._serialized) {
+              this._pendingAcks.set(sentMsg.id._serialized, item.id);
+            }
+
+            await axios.post(
+              `${this.orchestratorUrl}/api/bridge/outgoing/${item.id}/sent`,
+              { wa_msg_id: sentMsg?.id?._serialized || null },
+              { timeout: 5000 }
+            );
+            this.log(`→ Sent to ${item.display_name || to}: "${text.slice(0, 60)}"`);
+          } catch (err) {
+            this.log(`✗ Send failed: ${err.message}`);
+            await axios.post(
+              `${this.orchestratorUrl}/api/bridge/outgoing/${item.id}/failed`,
+              { error: err.message }, { timeout: 5000 }
+            ).catch(() => {});
+          }
+        }
+      } catch (err) {
+        if (err.code !== 'ECONNREFUSED') {
+          this.log(`Outgoing poll error: ${err.message}`);
+        }
+      }
+      if (this.running) setTimeout(poll, this.pollMs);
+    };
+    setTimeout(poll, 3000);
+  }
+
+  // ── Report status to server ───────────────────────────────────
+  async reportStatus(status, errorLog = null) {
+    try {
+      await axios.post(
+        `${this.orchestratorUrl}/api/agents/${this.channel}/status`,
+        { status, errorLog },
+        { timeout: 5000 }
+      );
+    } catch { /* server may be offline */ }
+  }
+
+  // ── Logging ───────────────────────────────────────────────────
+  log(msg) {
+    const ts = new Date().toTimeString().slice(0, 8);
+    console.log(`[${ts}] [${this.name}] ${msg}`);
+  }
 }
 
 module.exports = WhatsAppAgent;

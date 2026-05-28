@@ -699,172 +699,189 @@ function esc(value) {
 }
 
 function renderDashboard({ contacts, pendingSuggestions, outgoingQueue, agentStatuses, costSummary, providerStatus, env }) {
-  const agentCards = (env.channels || ['whatsapp', 'telegram', 'wechat']).map(ch => {
-    const a = (agentStatuses || []).find(x => x.channel === ch) || { channel: ch, status: 'not_started' };
-    const icon = a.status === 'active' ? '🟢' : a.status === 'login_required' ? '🟡' : '⚪';
-    return `<div class="mini-card"><strong>${icon} ${ch}</strong><br><span>${esc(a.status)}</span>${a.status === 'login_required' ? `<br><a href="/reauth/${ch}">Re-auth</a>` : ''}${a.errorLog ? `<p class="muted">${esc(a.errorLog)}</p>` : ''}</div>`;
+  const contactList = contacts || [];
+  const pending = pendingSuggestions || [];
+  const queue = outgoingQueue || [];
+  const agents = agentStatuses || [];
+  const totalMessages = contactList.reduce((sum, c) => sum + Number(c.message_count || 0), 0);
+  const activeSuggestion = pending[0] || null;
+  const activeContact = activeSuggestion?.contact || contactList[0] || null;
+  const activeRules = activeContact ? (activeContact.contactRules || activeContact.contact_rules || {}) : {};
+  const activeDecision = activeSuggestion ? safeJson(activeSuggestion.decisionJson || activeSuggestion.decision_json, {}) : {};
+  const activeStats = activeSuggestion ? safeJson(activeSuggestion.statsJson || activeSuggestion.stats_json, {}) : (activeContact?.stats || {});
+  const activeOptions = activeSuggestion ? safeJson(activeSuggestion.optionsJson || activeSuggestion.options_json, []) : [];
+  const activeIncoming = activeSuggestion?.incomingMessage?.body || activeSuggestion?.incoming_body || activeContact?.last_message || 'No incoming message selected yet.';
+  const recommended = activeOptions[0]?.text || activeSuggestion?.recommendedText || activeSuggestion?.recommended_text || 'When a message arrives, ReplyWise will suggest a safe reply here.';
+  const activeName = activeContact ? (activeContact.displayName || activeContact.display_name || activeContact.externalContactId || activeContact.external_contact_id || 'Unknown contact') : 'No contact yet';
+  const activeChannel = activeContact ? (activeContact.channel || 'whatsapp') : 'whatsapp';
+  const activeInitials = initials(activeName);
+  const stage = activeContact ? (activeContact.conversationStage || activeContact.conversation_stage || 'initial') : 'not started';
+  const warmth = activeStats?.warmthScore ?? activeContact?.stats?.warmthScore ?? 50;
+  const leadScore = Math.max(10, Math.min(100, Math.round((Number(warmth) || 50) * 0.65 + Math.min(30, Number(activeContact?.message_count || 0)) * 0.9 + (pending.length ? 8 : 0))));
+  const aiHandled = totalMessages ? Math.max(40, Math.min(99, Math.round(((queue.filter(q => ['sent', 'approved', 'auto_sent', 'queued'].includes(q.status)).length + pending.length) / Math.max(1, totalMessages)) * 100))) : 0;
+  const firstAction = activeDecision?.action || activeDecision?.should_reply || 'review';
+  const actionLabel = firstAction === 'yes' ? 'Reply now' : firstAction === 'wait' ? 'Wait' : firstAction === 'repair' ? 'Repair' : firstAction === 'no' ? 'Do not reply' : firstAction === 'end' ? 'End politely' : 'Review';
+  const providerChain = providerStatus?.configuredChain || ['local'];
+  const cloudUsage = providerStatus?.cloudUsage || {};
+
+  const agentItems = (env.channels || ['whatsapp', 'telegram', 'wechat']).map(ch => {
+    const a = agents.find(x => x.channel === ch) || { channel: ch, status: 'not_started' };
+    const status = a.status || 'not_started';
+    const dot = status === 'active' ? 'ok' : status === 'login_required' ? 'warn' : status === 'error' || status === 'failed' ? 'bad' : 'idle';
+    return `<div class="agent-row"><span class="dot ${dot}"></span><div><strong>${esc(labelCase(ch))}</strong><small>${esc(status.replace(/_/g, ' '))}${a.errorLog ? ' · ' + esc(a.errorLog).slice(0, 80) : ''}</small></div>${status === 'login_required' ? `<a class="small-link" href="/reauth/${esc(ch)}">Re-auth</a>` : ''}</div>`;
   }).join('');
 
-  const suggestionCards = (pendingSuggestions || []).map(renderSuggestionCard).join('') || '<div class="empty">No pending decisions. Send a sandbox message below.</div>';
-
-  const contactRows = (contacts || []).slice(0, 20).map(c => {
+  const contactItems = contactList.slice(0, 14).map((c, index) => {
+    const name = c.displayName || c.display_name || c.externalContactId || c.external_contact_id || 'Unknown';
     const rules = c.contactRules || c.contact_rules || {};
+    const unread = pending.filter(s => (s.contactId || s.contact_id) === c.id).length;
+    const isActive = activeContact && c.id === activeContact.id;
     const mode = rules.autopilot_mode || 'manual';
-    const checked = rules.auto_send_whitelisted ? 'checked' : '';
-    const autoReplyChecked = rules.auto_reply_enabled ? 'checked' : '';
-    const delayMode = rules.reply_delay_mode || 'normal';
-    return `
-    <tr>
-      <td>${esc(c.channel)}</td>
-      <td>${esc(c.displayName || c.display_name || c.externalContactId)}</td>
-      <td>${esc(c.conversationStage || c.conversation_stage || 'initial')}</td>
-      <td>${esc(c.message_count || 0)}</td>
-      <td>
-        <form method="POST" action="/api/contacts/${esc(c.id)}/persona" style="display:block;min-width:210px">
-          <textarea name="customPersona" rows="2" placeholder="Custom persona for this contact..." style="width:100%;border:1px solid var(--line);border-radius:8px;padding:6px;font-size:12px">${esc(rules.custom_persona || '')}</textarea>
-          <button class="ghost" type="submit" style="font-size:11px;margin-top:4px">Save persona</button>
-        </form>
-      </td>
-      <td>
-        <form method="POST" action="/api/contacts/${esc(c.id)}/autopilot" style="display:inline">
-          <select name="autopilotMode" title="Decision mode">
-            <option value="manual" ${mode === 'manual' ? 'selected' : ''}>manual</option>
-            <option value="auto_choose" ${mode === 'auto_choose' ? 'selected' : ''}>auto-choose</option>
-            <option value="auto_send_safe" ${mode === 'auto_send_safe' ? 'selected' : ''}>auto-send safe</option>
-          </select>
-          <label class="muted" title="Allow auto-send without approval"><input type="checkbox" name="autoSendWhitelisted" ${checked}> whitelist</label>
-          <button class="ghost" type="submit" style="font-size:11px">Save</button>
-        </form>
-      </td>
-      <td>
-        <form method="POST" action="/api/contacts/${esc(c.id)}/auto-reply" style="display:inline">
-          <label title="Per-chat auto-reply toggle (like LLM-for-Whatsapp sidebar switch)">
-            <input type="hidden" name="enabled" value="false">
-            <input type="checkbox" name="enabled" value="true" ${autoReplyChecked} onchange="this.form.submit()"> 🤖
-          </label>
-        </form>
-      </td>
-      <td>
-        <form method="POST" action="/api/contacts/${esc(c.id)}/reply-delay" style="display:inline">
-          <select name="mode" title="Reply delay mode" onchange="this.form.submit()">
-            <option value="instant" ${delayMode === 'instant' ? 'selected' : ''}>instant</option>
-            <option value="normal"  ${delayMode === 'normal'  ? 'selected' : ''}>normal</option>
-            <option value="random"  ${delayMode === 'random'  ? 'selected' : ''}>random</option>
-          </select>
-        </form>
-      </td>
-    </tr>`;
-  }).join('');
+    const last = c.last_message || 'No messages yet';
+    return `<div class="contact-item ${isActive ? 'active' : ''}">
+      <div class="avatar tone-${index % 6}">${esc(initials(name))}</div>
+      <div class="contact-copy"><strong>${esc(name)}</strong><span>${esc(last).slice(0, 58)}</span><small>${esc(c.channel || 'manual')} · ${esc(mode.replace(/_/g, ' '))}</small></div>
+      ${unread ? `<b class="unread">${unread}</b>` : ''}
+    </div>`;
+  }).join('') || '<div class="empty slim">No contacts yet. Use the sandbox to create one.</div>';
 
-  const queueRows = (outgoingQueue || []).slice(0, 8).map(q => `
-    <tr><td>${esc(q.channel)}</td><td>${esc(q.status)}</td><td>${esc(q.body).slice(0, 70)}</td></tr>`).join('');
+  const decisionStrip = pending.slice(0, 3).map(s => {
+    const c = s.contact || {};
+    const d = safeJson(s.decisionJson || s.decision_json, {});
+    const name = c.displayName || c.display_name || c.externalContactId || 'Unknown';
+    const act = d.action || d.should_reply || 'review';
+    return `<div class="decision-chip ${esc(act)}"><span>${esc(name)}</span><strong>${esc(act.replace(/_/g, ' '))}</strong><small>${esc(d.confidence || 70)}%</small></div>`;
+  }).join('') || '<div class="empty slim">No decisions waiting.</div>';
 
-  return `<!DOCTYPE html><html><head><title>ReplyWise Local</title>
+  const suggestionCards = pending.map(renderSuggestionCard).join('') || '<div class="empty">No pending decisions. Send a sandbox message below to test the pipeline.</div>';
+
+  const queueRows = queue.slice(0, 6).map(q => `<div class="queue-row"><span>${esc(q.channel || q.bridge || '?')}</span><strong>${esc(q.status || 'queued')}</strong><small>${esc(q.body || '').slice(0, 76)}</small></div>`).join('') || '<div class="empty slim">No outgoing messages.</div>';
+
+  const contactControl = activeContact ? `<div class="control-card">
+    <div class="panel-title">Contact AI controls</div>
+    <form method="POST" action="/api/contacts/${esc(activeContact.id)}/autopilot" class="stack-form">
+      <label>Decision mode</label>
+      <select name="autopilotMode">
+        <option value="manual" ${activeRules.autopilot_mode === 'manual' || !activeRules.autopilot_mode ? 'selected' : ''}>Manual approval</option>
+        <option value="auto_choose" ${activeRules.autopilot_mode === 'auto_choose' ? 'selected' : ''}>Auto-choose best reply</option>
+        <option value="auto_send_safe" ${activeRules.autopilot_mode === 'auto_send_safe' ? 'selected' : ''}>Auto-send safe replies</option>
+      </select>
+      <label class="check"><input type="checkbox" name="autoSendWhitelisted" ${activeRules.auto_send_whitelisted ? 'checked' : ''}> Whitelist safe auto-send</label>
+      <button class="ghost" type="submit">Save mode</button>
+    </form>
+    <form method="POST" action="/api/contacts/${esc(activeContact.id)}/auto-reply" class="inline-control">
+      <input type="hidden" name="enabled" value="false"><label class="switch"><input type="checkbox" name="enabled" value="true" ${activeRules.auto_reply_enabled ? 'checked' : ''} onchange="this.form.submit()"><span></span></label><b>Auto reply</b>
+    </form>
+    <form method="POST" action="/api/contacts/${esc(activeContact.id)}/reply-delay" class="stack-form">
+      <label>Reply timing</label>
+      <select name="mode" onchange="this.form.submit()"><option value="instant" ${activeRules.reply_delay_mode === 'instant' ? 'selected' : ''}>Instant</option><option value="normal" ${activeRules.reply_delay_mode === 'normal' || !activeRules.reply_delay_mode ? 'selected' : ''}>Natural delay</option><option value="random" ${activeRules.reply_delay_mode === 'random' ? 'selected' : ''}>Randomized</option></select>
+    </form>
+  </div>` : '';
+
+  return `<!DOCTYPE html><html><head><title>ReplyWise CRM Dashboard</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  :root{--bg:#f7f4ed;--card:#fff;--text:#1f2937;--muted:#6b7280;--line:#e5e7eb;--brand:#111827;--green:#DCFCE7;--yellow:#FEF3C7;--red:#FEE2E2;--blue:#DBEAFE}
-  *{box-sizing:border-box} body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:var(--bg);color:var(--text)}
-  .wrap{max-width:860px;margin:0 auto;padding:14px}.hero{padding:18px 2px 10px}.hero h1{margin:0;font-size:30px;letter-spacing:-.03em}.hero p{margin:6px 0;color:var(--muted)}
-  .tagline{font-size:18px;font-weight:800;color:#000}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.mini-card,.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;box-shadow:0 1px 0 rgba(0,0,0,.03)}
-  .metric{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.pill{display:inline-block;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:700;background:#eee}.yes{background:var(--green)}.wait{background:var(--yellow)}.no,.end{background:var(--red)}.repair{background:var(--blue)}
-  .decision{border-radius:16px;padding:14px;margin:10px 0}.decision h2{margin:0 0 4px;font-size:22px}.muted{color:var(--muted);font-size:13px}.message{font-size:19px;line-height:1.4;background:#f9fafb;padding:12px;border-radius:14px;border:1px solid #eee}
-  .option{border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0;background:#fff}.option-top{display:flex;justify-content:space-between;gap:8px;align-items:center}.score{font-weight:900}.risk-low{color:#15803d}.risk-medium{color:#b45309}.risk-high{color:#b91c1c}
-  button{border:0;border-radius:10px;padding:10px 13px;font-weight:800;cursor:pointer;background:#111827;color:white}.secondary{background:#e5e7eb;color:#111827}.danger{background:#fee2e2;color:#991b1b}.ghost{background:transparent;color:#111827;border:1px solid var(--line)}
-  form{display:inline}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.custom{display:flex;gap:8px;margin-top:8px}.custom input{flex:1;border:1px solid var(--line);border-radius:10px;padding:11px}
-  section{margin:18px 0} h3{margin:0 0 8px} table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden}td,th{padding:9px;border-bottom:1px solid var(--line);text-align:left;font-size:13px}th{background:#f3f4f6}textarea{font-family:inherit}.sandbox input,.sandbox select{border:1px solid var(--line);border-radius:10px;padding:10px;margin:4px 0;width:100%}.empty{padding:18px;border:1px dashed #bbb;border-radius:16px;text-align:center;color:var(--muted)}
-  @media (max-width:720px){.grid{grid-template-columns:1fr}.hero h1{font-size:26px}.custom{flex-direction:column}.option-top{align-items:flex-start;flex-direction:column}}
-</style></head><body><div class="wrap">
-  <div class="hero"><h1>ReplyWise Local</h1><p class="tagline">It does not just write replies. It tells you whether replying is a good idea.</p><p>Free-cost mode · AI: ${esc(env.aiProvider)}${providerStatus?.easyMode ? ' / easy chain: ' + esc((providerStatus.configuredChain || ['local']).join(' → ')) : ''} · Agents: ${esc(env.enabledAgents)} · Screenshots: ${env.screenshots ? 'debug only' : 'off'} · Auto-choose: ${env.autoChoose ? 'on' : 'off'} · Auto-send: ${env.autoSend ? 'on' : 'off'} · Dry run: ${env.dryRun ? 'on' : 'off'}</p></div>
+  :root{--bg:#f6f4ef;--panel:#fff;--soft:#f1f0eb;--line:#e5e1d8;--text:#4a4a44;--muted:#7a786f;--brand:#57c785;--brand2:#dff7e8;--dark:#2f302c;--warn:#f4b34e;--bad:#df6b62;--blue:#6ca8f7;--shadow:0 18px 60px rgba(34,31,24,.08)}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text)}
+  a{color:inherit}.app{height:100vh;min-height:780px;display:grid;grid-template-columns:296px minmax(420px,1fr) 430px;overflow:hidden}.left,.right{background:#fbfaf7;border-color:var(--line)}.left{border-right:1px solid var(--line);padding:24px 18px;overflow:auto}.right{border-left:1px solid var(--line);padding:18px 14px;overflow:auto}.center{display:flex;flex-direction:column;min-width:0;background:#fff}.brand{display:flex;align-items:center;gap:10px;font-weight:900;letter-spacing:.08em;color:#5d5d58}.brand-icon{width:28px;height:28px;border-radius:10px;background:var(--brand);color:white;display:grid;place-items:center}.section-label{margin:26px 2px 10px;color:#a09c92;font-size:12px;text-transform:uppercase;letter-spacing:.12em;font-weight:800}.contact-item{display:flex;align-items:center;gap:12px;padding:12px 10px;border-radius:18px;position:relative}.contact-item.active,.contact-item:hover{background:#f1f0ea}.avatar{width:43px;height:43px;border-radius:50%;display:grid;place-items:center;font-weight:900;flex:0 0 auto}.tone-0{background:#e2f8eb;color:#237a51}.tone-1{background:#e6f0ff;color:#2d63a8}.tone-2{background:#fff1d9;color:#946519}.tone-3{background:#f5e8ff;color:#71409e}.tone-4{background:#ffe7ea;color:#a04455}.tone-5{background:#e8f7f6;color:#257d80}.contact-copy{min-width:0;flex:1}.contact-copy strong{display:block;font-size:15px;color:#54544f}.contact-copy span{display:block;font-size:13px;color:#706f68;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.contact-copy small{font-size:11px;color:#9d9a91}.unread{background:var(--brand);color:white;border-radius:999px;font-size:12px;min-width:24px;height:24px;display:grid;place-items:center}.topbar{height:92px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;background:#fff}.identity{display:flex;gap:14px;align-items:center}.identity h1{margin:0;font-size:21px}.identity p{margin:2px 0 0;color:#77766d}.status-dot{width:8px;height:8px;border-radius:50%;background:var(--brand);display:inline-block;margin-right:6px}.top-actions{display:flex;gap:10px}.icon-btn,.ghost{border:1px solid var(--line);background:#fff;border-radius:14px;padding:10px 13px;font-weight:800;color:#55524b;cursor:pointer}.workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;padding:18px 22px;overflow:auto}.chat-card{border:1px solid var(--line);border-radius:26px;background:linear-gradient(180deg,#fff 0,#fbfaf6 100%);box-shadow:var(--shadow);overflow:hidden}.chat-stream{padding:24px;min-height:310px;display:flex;flex-direction:column;gap:13px}.bubble-wrap{display:flex;flex-direction:column;align-items:flex-start}.bubble-wrap.out{align-items:flex-end}.bubble{max-width:76%;padding:13px 16px;border-radius:20px;line-height:1.48;font-size:15px;box-shadow:0 1px 0 rgba(0,0,0,.04)}.bubble.in{background:#f0efea;color:#55534c;border-bottom-left-radius:7px}.bubble.ai{background:#e2f8ea;color:#427459;border-bottom-right-radius:7px}.bubble.out{background:var(--brand);color:#fff;border-bottom-right-radius:7px}.bubble-meta{font-size:11px;color:#99958b;margin-top:5px}.ai-badge{font-size:11px;color:#4fa873;font-weight:900;margin-top:5px}.composer{border-top:1px solid var(--line);padding:14px 16px;display:flex;gap:10px;background:#fff}.composer input{flex:1;border:1px solid var(--line);border-radius:999px;background:#f7f6f2;padding:13px 16px}.send{background:var(--brand);border:0;color:#fff;border-radius:50%;width:46px;height:46px;font-weight:900;cursor:pointer}.decision-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.decision-chip{background:#fff;border:1px solid var(--line);border-radius:18px;padding:12px}.decision-chip span,.decision-chip small{display:block;color:#88857c;font-size:12px}.decision-chip strong{display:block;margin:4px 0;color:#45443e}.decision-chip.yes{border-color:#b7ebc9;background:#f0fff5}.decision-chip.wait{border-color:#f5d38d;background:#fff9ea}.decision-chip.no,.decision-chip.end{border-color:#f0b0ad;background:#fff3f2}.decision-chip.repair{border-color:#bdd8ff;background:#f1f7ff}.panel{background:#fff;border:1px solid var(--line);border-radius:22px;padding:18px;box-shadow:0 1px 0 rgba(0,0,0,.02);margin-bottom:14px}.panel-title{font-size:17px;font-weight:900;margin-bottom:12px;color:#5d5b55}.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.stat{background:#f3f1ea;border-radius:17px;padding:16px}.stat strong{display:block;font-size:26px;color:#62615a;letter-spacing:-.03em}.stat span{font-size:13px;color:#77746c}.bar-chart{height:92px;display:flex;align-items:end;gap:8px;margin-top:14px}.bar-col{flex:1;text-align:center}.bar{background:var(--brand);border-radius:8px 8px 3px 3px;min-height:12px}.bar-col small{display:block;margin-top:5px;color:#97938a;font-size:11px}.agent-row{display:flex;gap:12px;align-items:center;border:1px solid var(--line);border-radius:15px;padding:12px;margin-bottom:9px}.agent-row div{flex:1}.agent-row strong{display:block}.agent-row small{display:block;color:#77736c;margin-top:2px}.dot{width:10px;height:10px;border-radius:50%;background:#bdb8ae}.dot.ok{background:var(--brand)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}.small-link{font-size:12px;font-weight:900;color:#2f8056}.info-list{display:grid;gap:10px}.info-row{display:flex;justify-content:space-between;gap:12px;font-size:14px}.info-row span{color:#77736c}.info-row strong{color:#56544e;text-align:right}.control-card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:16px;margin-bottom:14px}.stack-form{display:grid;gap:7px;margin-bottom:12px}.stack-form label{font-size:12px;color:#89857b;font-weight:800;text-transform:uppercase;letter-spacing:.08em}.stack-form select,.stack-form textarea{width:100%;border:1px solid var(--line);border-radius:13px;padding:10px;background:#fbfaf7}.check{font-size:13px!important;color:#67645c!important;letter-spacing:0!important;text-transform:none!important}.inline-control{display:flex;align-items:center;gap:10px;margin:8px 0 14px}.switch input{display:none}.switch span{display:block;width:46px;height:26px;border-radius:999px;background:#ddd7cc;position:relative;cursor:pointer}.switch span:before{content:'';position:absolute;width:20px;height:20px;background:white;border-radius:50%;top:3px;left:3px;transition:.2s}.switch input:checked+span{background:var(--brand)}.switch input:checked+span:before{transform:translateX(20px)}.queue-row{display:grid;grid-template-columns:72px 82px 1fr;gap:8px;border-bottom:1px solid #eee9df;padding:9px 0;font-size:12px}.queue-row strong{color:#555}.empty{border:1px dashed #cac4b8;border-radius:18px;padding:18px;text-align:center;color:#88847a;background:#fff}.empty.slim{padding:12px;font-size:13px}.sandbox input,.sandbox select{width:100%;border:1px solid var(--line);border-radius:13px;padding:11px;margin:5px 0;background:#fbfaf7}.sandbox button,button{border:0;border-radius:13px;padding:11px 14px;font-weight:900;background:#2f302c;color:#fff;cursor:pointer}.secondary{background:#efede7;color:#403f3a}.danger{background:#fee2e2;color:#991b1b}.ghost{background:#fff;color:#403f3a}.card{background:#fff;border:1px solid var(--line);border-radius:22px;padding:16px;margin-bottom:14px}.metric{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.pill{display:inline-block;border-radius:999px;padding:5px 10px;font-size:12px;font-weight:800;background:#eee}.yes{background:#ddf8e7}.wait{background:#fff1ca}.no,.end{background:#fee2e2}.repair{background:#dbeafe}.decision{border-radius:16px;padding:14px;margin:10px 0}.message{font-size:18px;line-height:1.4;background:#f9fafb;padding:12px;border-radius:14px;border:1px solid #eee}.muted{color:#77736c;font-size:13px}.option{border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0;background:#fff}.option-top{display:flex;justify-content:space-between;gap:8px;align-items:center}.risk-low{color:#15803d}.risk-medium{color:#b45309}.risk-high{color:#b91c1c}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.custom{display:flex!important;gap:8px;margin-top:8px}.custom input{flex:1;border:1px solid var(--line);border-radius:13px;padding:11px}.mobile-only{display:none}
+  @media(max-width:1100px){.app{grid-template-columns:260px 1fr}.right{display:none}.mobile-only{display:block}}@media(max-width:760px){.app{display:block;height:auto;min-height:100vh}.left{border-right:0;border-bottom:1px solid var(--line)}.center{min-height:100vh}.topbar{height:auto;padding:16px;align-items:flex-start}.workspace{padding:14px}.decision-strip{grid-template-columns:1fr}.bubble{max-width:92%}.custom{flex-direction:column}.option-top{align-items:flex-start;flex-direction:column}}
+</style></head><body><div class="app">
+  <aside class="left">
+    <div class="brand"><div class="brand-icon">↗</div><span>REPLYWISE CRM</span></div>
+    <div class="section-label">Conversations</div>${contactItems}
+    <div class="section-label">AI control</div>
+    ${contactControl || '<div class="empty slim">Create a contact to control AI behavior.</div>'}
+    <div class="section-label">Safety</div>
+    <div class="control-card"><div class="info-list"><div class="info-row"><span>Manual approval</span><strong>${env.autoSend ? 'Optional' : 'Required'}</strong></div><div class="info-row"><span>Dry run</span><strong>${env.dryRun ? 'On' : 'Off'}</strong></div><div class="info-row"><span>Screenshots</span><strong>${env.screenshots ? 'Debug only' : 'Off'}</strong></div><div class="info-row"><span>API keys</span><strong>Not required</strong></div></div></div>
+  </aside>
 
-  <section class="grid">${agentCards}<div class="mini-card"><strong>💸 Cost today</strong><br><span>$${Number(costSummary.estimatedCostUsd || 0).toFixed(2)}</span><p class="muted">Local actions: ${esc(costSummary.localActions)} · Screenshots: 0</p></div><div class="mini-card"><strong>☁️ AI easy mode</strong><br><span>${esc((providerStatus?.configuredChain || ['local']).join(' → '))}</span><p class="muted">Cloud calls today: ${esc(providerStatus?.cloudUsage?.totalCloudCalls || 0)}/${esc(providerStatus?.cloudUsage?.maxCloudCallsPerDay || 0)} · local fallback always on</p></div><div class="mini-card"><strong>🧠 Smart Autopilot</strong><br><span>${env.autoSend ? 'Safe auto-send enabled' : env.autoChoose ? 'Auto-choose only' : 'Manual'}</span><p class="muted">Risky messages always require review. Official messaging API keys: none.</p></div></section>
+  <main class="center">
+    <div class="topbar">
+      <div class="identity"><div class="avatar tone-0">${esc(activeInitials)}</div><div><h1>${esc(activeName)}</h1><p><span class="status-dot"></span>${esc(labelCase(activeChannel))} · ${esc(stage)} · ${esc(actionLabel)}</p></div></div>
+      <div class="top-actions"><form method="POST" action="/api/profile-refresh/run"><button class="icon-btn" type="submit">Refresh memory</button></form><button class="icon-btn" onclick="testLLM(this)">Test AI</button></div>
+    </div>
+    <div class="workspace">
+      <div class="decision-strip">${decisionStrip}</div>
+      <div class="chat-card">
+        <div class="chat-stream">
+          <div class="bubble-wrap"><div class="bubble in">${esc(activeIncoming)}</div><div class="bubble-meta">Incoming · ${esc(activeChannel)}</div></div>
+          <div class="bubble-wrap out"><div class="bubble ai">${esc(recommended)}</div><div class="ai-badge">🤖 Suggested by ReplyWise</div></div>
+          ${activeDecision?.best_move ? `<div class="bubble-wrap out"><div class="bubble out">Best move: ${esc(activeDecision.best_move)}</div><div class="bubble-meta">Decision confidence ${esc(activeDecision.confidence || 70)}%</div></div>` : ''}
+        </div>
+        <div class="composer"><input placeholder="Edit a custom reply in the decision card below…"><button class="send">➤</button></div>
+      </div>
+      <section><div class="panel-title">Pending decisions <span id="live-indicator" class="muted" style="font-size:12px;font-weight:700">⚪ connecting…</span></div>${suggestionCards}</section>
+      <section class="mobile-only"><div class="panel-title">Insights</div>${renderRightPanels()}</section>
+      <section><div class="panel-title">Sandbox test</div><div class="card sandbox"><form method="POST" action="/api/sandbox/whatsapp/incoming"><select name="channel" onchange="this.form.action='/api/sandbox/'+this.value+'/incoming'"><option>whatsapp</option><option>telegram</option><option>wechat</option></select><input name="externalContactId" placeholder="contact_id e.g. customer_123" required><input name="displayName" placeholder="Display name"><input name="body" placeholder="Incoming message or leave empty for media test"><select name="media_type"><option value="text">text</option><option value="audio">audio</option><option value="image">image</option><option value="sticker">sticker</option><option value="file">file</option></select><input name="media_summary" placeholder="Optional media summary / transcript"><label class="muted" style="display:block;margin:7px 0"><input type="checkbox" name="is_group" value="true"> group chat</label><label class="muted" style="display:block;margin:7px 0"><input type="checkbox" name="mentioned_me" value="true"> directly mentioned me</label><button type="submit">Analyze message</button></form></div></section>
+    </div>
+  </main>
 
-  <section><h3>Pending Decisions <span id="live-indicator" class="muted" style="font-size:11px;font-weight:normal">⚪ connecting…</span></h3>${suggestionCards}</section>
-
-  <section><h3>Sandbox Test</h3><div class="card sandbox"><form method="POST" action="/api/sandbox/whatsapp/incoming"><select name="channel" onchange="this.form.action='/api/sandbox/'+this.value+'/incoming'"><option>whatsapp</option><option>telegram</option><option>wechat</option></select><input name="externalContactId" placeholder="contact_id e.g. tg_ayesha" required><input name="displayName" placeholder="Display name"><input name="body" placeholder="Incoming message or leave empty for media test"><select name="media_type" title="Media type"><option value="text">text</option><option value="audio">audio</option><option value="image">image</option><option value="sticker">sticker</option><option value="file">file</option></select><input name="media_summary" placeholder="Optional media summary / transcript"><label class="muted" style="display:block;margin:6px 0"><input type="checkbox" name="is_group" value="true"> group chat</label><label class="muted" style="display:block;margin:6px 0"><input type="checkbox" name="mentioned_me" value="true"> directly mentioned me</label><button type="submit">Analyze Message</button></form></div></section>
-
-  <section><h3>Contacts</h3><table><tr><th>Channel</th><th>Name</th><th>Stage</th><th>Msgs</th><th>Custom Persona</th><th>Autopilot</th><th title="Per-chat auto-reply">🤖</th><th title="Reply delay">Delay</th></tr>${contactRows || '<tr><td colspan="8">No contacts yet</td></tr>'}</table></section>
-
-  <section><h3>Outgoing Queue</h3><table><tr><th>Channel</th><th>Status</th><th>Body</th></tr>${queueRows || '<tr><td colspan="3">No outgoing messages</td></tr>'}</table></section>
-
-  <section><h3>⏰ Scheduled Sends <span id="schedule-count" class="muted" style="font-size:11px;font-weight:normal"></span></h3>
-    <div id="scheduled-list" class="muted" style="font-size:13px;padding:8px"><em>Loading…</em></div>
-  </section>
-
-  <section style="display:flex;gap:10px;flex-wrap:wrap">
-    <form method="POST" action="/api/profile-refresh/run"><button class="secondary" type="submit">🔄 Refresh Memory</button></form>
-    <button class="ghost" onclick="testLLM(this)" style="font-size:13px">🔌 Test LLM Backend</button>
-    <span id="llm-test-result" class="muted" style="align-self:center;font-size:12px"></span>
-  </section>
-</div><script>
-  // ── v6: Live SSE updates (replaces 20s reload) ──────────────
+  <aside class="right">${renderRightPanels()}</aside>
+</div>
+<script>
   (function(){
-    const indicator = document.getElementById('live-indicator');
+    var indicator = document.getElementById('live-indicator');
     function connect(){
-      const es = new EventSource('/api/events/stream');
-      es.addEventListener('hello', () => { indicator.textContent = '🟢 live'; });
-      es.addEventListener('suggestion.created', (e) => {
-        indicator.textContent = '🔵 new suggestion — refreshing…';
-        // Reload to render the new card. (Future: render via JS, no reload.)
-        setTimeout(() => location.reload(), 400);
-      });
-      es.addEventListener('suggestion.approved', () => setTimeout(() => location.reload(), 600));
-      es.addEventListener('suggestion.skipped',  () => setTimeout(() => location.reload(), 600));
-      es.addEventListener('schedule.fired',      () => setTimeout(() => location.reload(), 600));
-      es.addEventListener('agent.status', (e) => {
-        const d = JSON.parse(e.data || '{}');
-        indicator.textContent = '🟡 agent ' + d.channel + ': ' + d.status;
-        setTimeout(() => indicator.textContent = '🟢 live', 3000);
-      });
-      es.onerror = () => {
-        indicator.textContent = '🔴 disconnected — retrying';
-        // EventSource auto-reconnects, but force a fresh connection after 5s if stuck
-        setTimeout(() => { try{es.close();}catch{}; connect(); }, 5000);
-      };
+      if(!window.EventSource){ if(indicator) indicator.textContent='Live updates unavailable'; return; }
+      var es = new EventSource('/api/events/stream');
+      es.addEventListener('hello', function(){ if(indicator) indicator.textContent = '🟢 live'; });
+      es.addEventListener('suggestion.created', function(){ if(indicator) indicator.textContent = '🔵 new message — refreshing…'; setTimeout(function(){ location.reload(); }, 450); });
+      es.addEventListener('suggestion.approved', function(){ setTimeout(function(){ location.reload(); }, 600); });
+      es.addEventListener('suggestion.skipped', function(){ setTimeout(function(){ location.reload(); }, 600); });
+      es.addEventListener('schedule.fired', function(){ setTimeout(function(){ location.reload(); }, 600); });
+      es.addEventListener('agent.status', function(e){ try{ var d = JSON.parse(e.data || '{}'); if(indicator) indicator.textContent = '🟡 ' + d.channel + ': ' + d.status; setTimeout(function(){ if(indicator) indicator.textContent='🟢 live'; }, 3000); }catch(_e){} });
+      es.onerror = function(){ if(indicator) indicator.textContent = '🔴 reconnecting'; setTimeout(function(){ try{ es.close(); }catch(_e){} connect(); }, 6000); };
     }
     connect();
-    // Fallback: hard reload every 60s in case SSE gets stuck behind a proxy
-    setTimeout(() => location.reload(), 60000);
   })();
 
-  // ── Live scheduled-sends panel ────────────────────────────────
   async function loadScheduled(){
+    var el = document.getElementById('scheduled-list');
+    var count = document.getElementById('schedule-count');
+    if(!el) return;
     try{
-      const r = await fetch('/api/schedule/list');
-      const d = await r.json();
-      const list = d.scheduled || [];
-      const el = document.getElementById('scheduled-list');
-      const count = document.getElementById('schedule-count');
-      if(!list.length){ el.innerHTML = '<em>No scheduled sends.</em>'; count.textContent = ''; return; }
-      count.textContent = list.length + ' pending';
-      el.innerHTML = list.map(q => {
-        const when = q.scheduled_at ? new Date(q.scheduled_at).toLocaleString() : 'soon';
-        const body = String(q.body||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,80);
-        return '<div style="border-bottom:1px solid #eee;padding:6px 0;display:flex;gap:8px;align-items:center">'
-          + '<span class="pill">' + (q.bridge||'?') + '</span>'
-          + '<span style="flex:1">' + body + '</span>'
-          + '<span class="muted">⏰ ' + when + '</span>'
-          + '<form method="POST" action="/api/outgoing/' + q.id + '/cancel-schedule" style="display:inline"><button class="ghost" type="submit" style="font-size:11px">Cancel</button></form>'
-          + '</div>';
+      var r = await fetch('/api/schedule/list');
+      var d = await r.json();
+      var list = d.scheduled || [];
+      if(!list.length){ el.innerHTML = '<div class="empty slim">No scheduled sends.</div>'; if(count) count.textContent=''; return; }
+      if(count) count.textContent = list.length + ' pending';
+      el.innerHTML = list.map(function(q){
+        var when = q.scheduled_at ? new Date(q.scheduled_at).toLocaleString() : 'soon';
+        var body = String(q.body || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').slice(0,76);
+        return '<div class="queue-row"><span>' + (q.bridge || '?') + '</span><strong>⏰ ' + when + '</strong><small>' + body + '</small><form method="POST" action="/api/outgoing/' + q.id + '/cancel-schedule"><button class="ghost" type="submit" style="font-size:11px">Cancel</button></form></div>';
       }).join('');
-    }catch(e){
-      document.getElementById('scheduled-list').innerHTML = '<em>Could not load: ' + e.message + '</em>';
-    }
+    }catch(e){ el.innerHTML = '<div class="empty slim">Could not load schedule.</div>'; }
   }
-  loadScheduled();
-  setInterval(loadScheduled, 15000);
+  loadScheduled(); setInterval(loadScheduled, 15000);
 
   async function testLLM(btn){
-    const el=document.getElementById('llm-test-result');
-    btn.disabled=true; el.textContent='Testing…';
-    try{
-      const r=await fetch('/api/ai/test',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-      const d=await r.json();
-      el.textContent=d.ok?'✅ Connected: '+( d.model||d.provider||'ok'):'❌ '+( d.error||'Failed');
-    }catch(e){el.textContent='❌ '+e.message;}
-    btn.disabled=false;
+    var old = btn.textContent; btn.disabled = true; btn.textContent = 'Testing…';
+    try{ var r = await fetch('/api/ai/test', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' }); var d = await r.json(); btn.textContent = d.ok ? 'AI connected' : 'AI failed'; setTimeout(function(){ btn.textContent = old; btn.disabled = false; }, 2500); }
+    catch(e){ btn.textContent = 'AI failed'; setTimeout(function(){ btn.textContent = old; btn.disabled = false; }, 2500); }
   }
 </script></body></html>`;
+
+  function renderRightPanels() {
+    const bars = [42, 64, 55, 80, 68, 96, 72].map((h, i) => `<div class="bar-col"><div class="bar" style="height:${h}px"></div><small>${['M','T','W','T','F','S','S'][i]}</small></div>`).join('');
+    return `<div class="panel"><div class="panel-title">This week</div><div class="stats-grid"><div class="stat"><strong>${esc(totalMessages.toLocaleString())}</strong><span>Messages tracked</span></div><div class="stat"><strong>${esc(pending.length)}</strong><span>Need review</span></div><div class="stat"><strong>${esc(queue.length)}</strong><span>Queue items</span></div><div class="stat"><strong>${esc(aiHandled)}%</strong><span>AI assisted</span></div></div><div class="bar-chart">${bars}</div></div>
+    <div class="panel"><div class="panel-title">Agents</div>${agentItems}</div>
+    <div class="panel"><div class="panel-title">Contact info</div><div class="info-list"><div class="info-row"><span>Stage</span><strong>${esc(stage)}</strong></div><div class="info-row"><span>Lead / warmth score</span><strong style="color:#46ad71">${esc(leadScore)} / 100</strong></div><div class="info-row"><span>Messages</span><strong>${esc(activeContact?.message_count || 0)} total</strong></div><div class="info-row"><span>Language</span><strong>${esc(activeStats?.detectedLanguage || activeContact?.preferredLanguage || activeContact?.preferred_language || 'mixed')}</strong></div><div class="info-row"><span>Momentum</span><strong>${esc(activeStats?.momentumLabel || 'unknown')}</strong></div></div></div>
+    <div class="panel"><div class="panel-title">AI provider</div><div class="info-list"><div class="info-row"><span>Mode</span><strong>${esc(env.aiProvider)}</strong></div><div class="info-row"><span>Fallback chain</span><strong>${esc(providerChain.join(' → '))}</strong></div><div class="info-row"><span>Cloud calls</span><strong>${esc(cloudUsage.totalCloudCalls || 0)} / ${esc(cloudUsage.maxCloudCallsPerDay || 0)}</strong></div><div class="info-row"><span>Cost today</span><strong>$${Number(costSummary.estimatedCostUsd || 0).toFixed(2)}</strong></div></div></div>
+    <div class="panel"><div class="panel-title">Outgoing queue</div>${queueRows}</div>
+    <div class="panel"><div class="panel-title">Scheduled sends <span id="schedule-count" class="muted" style="font-size:12px"></span></div><div id="scheduled-list"><div class="empty slim">Loading…</div></div></div>`;
+  }
+
+  function initials(name) {
+    const parts = String(name || '?').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '?';
+    return parts.slice(0, 2).map(p => p[0]).join('').toUpperCase();
+  }
+
+  function labelCase(value) {
+    return String(value || '').replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
 }
+
 
 function renderSuggestionCard(s) {
   const options = safeJson(s.optionsJson, []);
