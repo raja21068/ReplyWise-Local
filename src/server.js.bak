@@ -56,14 +56,14 @@ app.use(express.json({ limit: '50kb' }));
 
 app.get('/', async (req, res, next) => {
   try {
-    const state = await buildDashboardState(req.query.contactId, req.query.view);
+    const state = await buildDashboardState(req.query.contactId);
     res.send(renderDashboard(state));
   } catch (err) { next(err); }
 });
 
 app.get('/api/dashboard/state', async (req, res, next) => {
   try {
-    res.json({ ok: true, ...(await buildDashboardState(req.query.contactId, req.query.view)) });
+    res.json({ ok: true, ...(await buildDashboardState(req.query.contactId)) });
   } catch (err) { next(err); }
 });
 
@@ -729,7 +729,7 @@ function extractFirstName(persona) {
 }
 
 
-async function buildDashboardState(selectedContactId = null, view = 'all') {
+async function buildDashboardState(selectedContactId = null) {
   const [contacts, pendingSuggestions, outgoingQueue, agentStatuses, costSummary, systemEvents, processingStatuses] = await Promise.all([
     db.listContacts(),
     db.listPendingSuggestions(),
@@ -741,58 +741,12 @@ async function buildDashboardState(selectedContactId = null, view = 'all') {
   ]);
 
   const providerStatus = typeof ai.getProviderStatus === 'function' ? ai.getProviderStatus() : null;
-  const store = typeof db.readStore === 'function' ? await db.readStore() : null;
-
-  const allMessages = store?.messages || [];
-  const pendingContactIds = new Set(pendingSuggestions.map(s => s.contactId || s.contact_id).filter(Boolean));
-  const hasMessageFlag = (contactId, flag) => allMessages.some(m => {
-    if (m.contact_id !== contactId) return false;
-    const meta = m.metadata || {};
-    return Boolean(m[flag] || meta[flag]);
-  });
-  const isUnread = (contact) => pendingContactIds.has(contact.id) || allMessages.some(m => m.contact_id === contact.id && m.direction === 'incoming' && (m.metadata || {}).unread);
-  const isGroup = (contact) => Boolean(contact.is_group || contact.contact_rules?.is_group || contact.contactRules?.is_group || hasMessageFlag(contact.id, 'is_group'));
-  const isMention = (contact) => Boolean(hasMessageFlag(contact.id, 'mentioned_me') || hasMessageFlag(contact.id, 'reply_to_me'));
-  const isStarred = (contact) => Boolean(contact.is_starred || contact.contact_rules?.is_starred || contact.contactRules?.is_starred || hasMessageFlag(contact.id, 'is_starred'));
-  const isBlocked = (contact) => Boolean(contact.blocked || contact.contact_rules?.blocked || contact.contactRules?.blocked);
-  const isLead = (contact) => {
-    const stage = String(contact.conversationStage || contact.conversation_stage || '').toLowerCase();
-    return ['lead','new','initial','negotiation','proposal','customer','vip'].some(x => stage.includes(x)) || Boolean(contact.stats?.warmthScore || contact.stats?.leadScore);
-  };
-  const navCounts = {
-    all: contacts.length,
-    unread: contacts.filter(isUnread).length,
-    groups: contacts.filter(isGroup).length,
-    mentions: contacts.filter(isMention).length,
-    starred: contacts.filter(isStarred).length,
-    blocked: contacts.filter(isBlocked).length,
-    agents: agentStatuses.length,
-    auto_rules: contacts.filter(c => (c.contactRules || c.contact_rules || {}).auto_reply_enabled).length,
-    smart_routing: pendingSuggestions.length + processingStatuses.filter(p => p.status === 'processing').length,
-    scheduled: outgoingQueue.filter(q => q.status === 'scheduled' || q.scheduled_for).length,
-    approvals: pendingSuggestions.length,
-    leads: contacts.filter(isLead).length,
-    analytics: (store?.messages || []).length,
-    memory: contacts.filter(c => c.profileSummary || c.profile_summary).length,
-    settings: 0,
-    logs: systemEvents.length,
-    billing: costSummary.localActions || 0,
-  };
-  const viewKey = String(view || 'all').replace(/[^a-z0-9_]/gi, '') || 'all';
-  const conversationFilter = {
-    all: () => true,
-    unread: isUnread,
-    groups: isGroup,
-    mentions: isMention,
-    starred: isStarred,
-    blocked: isBlocked,
-    leads: isLead,
-  }[viewKey] || (() => true);
-  const filteredContacts = contacts.filter(conversationFilter);
-  const selected = selectedContactId || pendingSuggestions[0]?.contactId || filteredContacts[0]?.id || contacts[0]?.id || null;
+  const selected = selectedContactId || pendingSuggestions[0]?.contactId || contacts[0]?.id || null;
   const selectedMessages = selected ? await db.getRecentMessages(selected, 80) : [];
   const selectedContact = contacts.find(c => c.id === selected) || null;
   const selectedSuggestion = pendingSuggestions.find(s => s.contactId === selected) || null;
+
+  const store = typeof db.readStore === 'function' ? await db.readStore() : null;
   const since = Date.now() - (7 * 24 * 60 * 60 * 1000);
   const weekMessages = (store?.messages || []).filter(m => new Date(m.created_at || m.timestamp || 0).getTime() >= since);
   const weekSuggestions = (store?.suggestions || []).filter(s => new Date(s.created_at || 0).getTime() >= since);
@@ -800,8 +754,7 @@ async function buildDashboardState(selectedContactId = null, view = 'all') {
   const aiHandledPct = weekSuggestions.length ? Math.round((weekSuggestions.filter(s => ['approved', 'auto_sent', 'skipped', 'waiting'].includes(s.status)).length / weekSuggestions.length) * 100) : 0;
 
   return {
-    contacts: filteredContacts,
-    allContacts: contacts,
+    contacts,
     pendingSuggestions,
     outgoingQueue,
     agentStatuses,
@@ -813,8 +766,6 @@ async function buildDashboardState(selectedContactId = null, view = 'all') {
     selectedSuggestion,
     systemEvents,
     processingStatuses,
-    view: viewKey,
-    navCounts,
     weekStats: {
       messages: weekMessages.length,
       aiHandledPct,
@@ -884,9 +835,9 @@ function esc(value) {
 }
 
 function renderDashboard({
-  contacts = [], allContacts = [], pendingSuggestions = [], outgoingQueue = [], agentStatuses = [], costSummary = {}, providerStatus = null,
+  contacts = [], pendingSuggestions = [], outgoingQueue = [], agentStatuses = [], costSummary = {}, providerStatus = null,
   env = {}, selectedContactId = null, selectedContact = null, selectedMessages = [], selectedSuggestion = null,
-  systemEvents = [], processingStatuses = [], weekStats = {}, view = 'all', navCounts = {},
+  systemEvents = [], processingStatuses = [], weekStats = {},
 }) {
   const active = selectedContact || contacts.find(c => c.id === selectedContactId) || contacts[0] || null;
   const activeId = active?.id || selectedContactId || null;
@@ -901,14 +852,6 @@ function renderDashboard({
   const fallbackActive = (systemEvents || []).some(e => e.title === 'Cloud AI fallback used' || e.status === 'warning');
   const activeProcessing = processingStatuses.find(p => (p.contact_id && p.contact_id === activeId) || (active && p.external_contact_id === active.externalContactId));
   const errors = (systemEvents || []).filter(e => e.status === 'error').slice(0, 5);
-  const currentView = String(view || 'all');
-  const viewLabels = {
-    all: 'All Chats', unread: 'Unread', groups: 'Groups', mentions: 'Mentions', starred: 'Starred', blocked: 'Blocked',
-    agents: 'AI Agents', auto_rules: 'Auto Reply Rules', smart_routing: 'Smart Routing', scheduled: 'Scheduled', approvals: 'Manual Approval',
-    leads: 'Leads', analytics: 'Analytics', memory: 'Contact Memory', settings: 'Settings', logs: 'Logs', billing: 'Billing & Usage'
-  };
-  const navHref = (key) => `/?view=${encodeURIComponent(key)}`;
-  const navItem = (key, icon, label, count = null) => `<a class="${currentView === key ? 'active' : ''}" href="${navHref(key)}"><span>${icon}</span><span>${esc(label)}</span>${count !== null ? `<b style="margin-left:auto">${esc(count)}</b>` : ''}</a>`;
 
   function initials(name) {
     const raw = String(name || '??').replace(/[^a-zA-Z0-9\s]/g, ' ').trim();
@@ -938,35 +881,12 @@ function renderDashboard({
     const activeClass = c.id === activeId ? 'active' : '';
     const pending = pendingByContact[c.id] || 0;
     const avatarClass = ['a','b','c','d','e'][index % 5];
-    return `<a class="conversation ${activeClass}" href="/?view=${encodeURIComponent(currentView)}&contactId=${encodeURIComponent(c.id)}">
+    return `<a class="conversation ${activeClass}" href="/?contactId=${encodeURIComponent(c.id)}">
       <div class="avatar av-${avatarClass}">${esc(initials(name))}</div>
       <div class="conversation-copy"><div class="conversation-title">${esc(name)}</div><div class="conversation-last">${esc(last).slice(0, 72)}</div></div>
       <div class="conversation-side"><span>${esc(timeAgo(c.updated_at || c.last_updated || c.created_at))}</span>${pending ? `<b>${pending}</b>` : ''}</div>
     </a>`;
   }).join('') || '<div class="empty small">No conversations yet. Use the sandbox test or WhatsApp agent.</div>';
-
-  const sidebarNav = `<nav class="nav">
-    ${navItem('all', '💬', 'All Chats', navCounts.all || 0)}
-    ${navItem('unread', '●', 'Unread', navCounts.unread || 0)}
-    ${navItem('groups', '👥', 'Groups', navCounts.groups || 0)}
-    ${navItem('mentions', '@', 'Mentions', navCounts.mentions || 0)}
-    ${navItem('starred', '★', 'Starred', navCounts.starred || 0)}
-    ${navItem('blocked', '⊘', 'Blocked', navCounts.blocked || 0)}
-    <div class="section-label nav-heading">Automation</div>
-    ${navItem('agents', '🤖', 'AI Agents', navCounts.agents || 0)}
-    ${navItem('auto_rules', '⚙', 'Auto Reply Rules', navCounts.auto_rules || 0)}
-    ${navItem('smart_routing', '↪', 'Smart Routing', navCounts.smart_routing || 0)}
-    ${navItem('scheduled', '⏰', 'Scheduled', navCounts.scheduled || 0)}
-    ${navItem('approvals', '☑', 'Manual Approval', navCounts.approvals || 0)}
-    <div class="section-label nav-heading">Intelligence</div>
-    ${navItem('leads', '🎯', 'Leads', navCounts.leads || 0)}
-    ${navItem('analytics', '▥', 'Analytics', navCounts.analytics || 0)}
-    ${navItem('memory', '🧠', 'Contact Memory', navCounts.memory || 0)}
-    <div class="section-label nav-heading">System</div>
-    ${navItem('settings', '⚙', 'Settings')}
-    ${navItem('logs', '▣', 'Logs', navCounts.logs || 0)}
-    ${navItem('billing', '💳', 'Billing & Usage', navCounts.billing || 0)}
-  </nav>`;
 
   const messagesHtml = selectedMessages.map((m) => {
     const outgoing = m.direction === 'outgoing';
@@ -1048,40 +968,16 @@ function renderDashboard({
     <input type="hidden" name="enabled" value="false"><label class="switch-label"><span>Auto reply</span><input type="checkbox" name="enabled" value="true" ${activeRules.auto_reply_enabled ? 'checked' : ''} onchange="this.form.submit()"><i></i></label>
   </form>` : '<div class="muted small-pad">No active contact.</div>';
 
-  const allContactRows = (allContacts.length ? allContacts : contacts);
-  const pendingRows = pendingSuggestions.slice(0, 8).map(s => `<div class="queue-line"><span>☑</span><div><strong>${esc(s.display_name || s.contact?.displayName || 'Contact')}</strong><div class="sub">${esc((s.incoming_body || s.incomingMessage?.body || '').slice(0, 120))}</div></div></div>`).join('') || '<div class="empty small">No pending approvals.</div>';
-  const leadRows = allContactRows.slice(0, 8).map(c => {
-    const st = c.stats || {};
-    const score = st.leadScore || st.warmthScore || c.lead_score || 0;
-    return `<div class="queue-line"><span>🎯</span><div><strong>${esc(c.displayName || c.display_name || c.externalContactId)}</strong><div class="sub">Stage: ${esc(c.conversationStage || c.conversation_stage || 'initial')} · Score: ${esc(score)}/100</div></div></div>`;
-  }).join('') || '<div class="empty small">No leads yet.</div>';
-  const memoryRows = allContactRows.slice(0, 6).map(c => `<div class="queue-line"><span>🧠</span><div><strong>${esc(c.displayName || c.display_name || c.externalContactId)}</strong><div class="sub">${esc(c.profileSummary || c.profile_summary || 'Memory not generated yet.').slice(0, 160)}</div></div></div>`).join('') || '<div class="empty small">No contact memory yet.</div>';
-  const settingsHtml = `<div class="mini-card"><strong>AI Provider:</strong> ${esc(env.aiProvider || 'local')}<br><strong>Agents:</strong> ${esc(env.enabledAgents || '')}<br><strong>Dry run:</strong> ${env.dryRun ? 'on' : 'off'} · <strong>Auto send:</strong> ${env.autoSend ? 'on' : 'off'} · <strong>Screenshots:</strong> ${env.screenshots ? 'on' : 'off'}</div><form method="POST" action="/api/ai/test"><button class="ghost" type="submit">Test AI backend</button></form>`;
-  const focusCards = {
-    agents: `<div class="card focus"><h3>AI Agents</h3>${agentsHtml}<div class="sub">Live bridge health from WhatsApp / Telegram / WeChat agents.</div></div>`,
-    auto_rules: `<div class="card focus"><h3>Auto Reply Rules</h3>${activeRulesForm}</div>`,
-    smart_routing: `<div class="card focus"><h3>Smart Routing</h3>${pipelineHtml}<div class="sub">Routes each message through triage, memory, reply generation, safety, then sender queue.</div></div>`,
-    scheduled: `<div class="card focus"><h3>Scheduled</h3>${queueHtml}</div>`,
-    approvals: `<div class="card focus"><h3>Manual Approval</h3>${pendingRows}</div>`,
-    leads: `<div class="card focus"><h3>Leads</h3>${leadRows}</div>`,
-    analytics: `<div class="card focus"><h3>Analytics</h3><div class="stats-grid"><div class="stat"><strong>${esc(weekStats.messages || 0)}</strong><span>Messages this week</span></div><div class="stat"><strong>${esc(weekStats.aiHandledPct || 0)}%</strong><span>AI handled</span></div><div class="stat"><strong>${esc(weekStats.sent || 0)}</strong><span>Sent</span></div><div class="stat"><strong>${esc(weekStats.errors || 0)}</strong><span>Errors</span></div></div></div>`,
-    memory: `<div class="card focus"><h3>Contact Memory</h3>${memoryRows}<form method="POST" action="/api/profile-refresh/run"><button class="ghost" type="submit">Refresh memory profiles</button></form></div>`,
-    settings: `<div class="card focus"><h3>Settings</h3>${settingsHtml}</div>`,
-    logs: `<div class="card focus"><h3>Logs</h3>${eventsHtml}${errors.length ? '<h3 style="margin-top:14px">Recent Errors</h3>' + errorsHtml : ''}</div>`,
-    billing: `<div class="card focus"><h3>Billing & Usage</h3><div class="stats-grid"><div class="stat"><strong>$${Number(costSummary.estimatedCostUsd || 0).toFixed(2)}</strong><span>Est. cost today</span></div><div class="stat"><strong>${esc(costSummary.localActions || 0)}</strong><span>Local actions</span></div><div class="stat"><strong>${esc(costSummary.cloudAiCalls || 0)}</strong><span>Cloud AI calls</span></div><div class="stat"><strong>${esc(costSummary.screenshotsUsed || 0)}</strong><span>Screenshots</span></div></div></div>`,
-  };
-  const focusCard = focusCards[currentView] || '';
-
   return `<!doctype html><html><head><title>ReplyWise CRM Dashboard</title><meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
     :root{--bg:#f7f6f1;--panel:#fff;--panel2:#faf9f5;--line:#e9e6de;--text:#202124;--muted:#6b6f76;--green:#22c55e;--green2:#e8f9ee;--green3:#d7f7e1;--blue:#e9f2ff;--red:#fee2e2;--amber:#fff3cd;--shadow:0 12px 32px rgba(17,24,39,.06)}
-    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;font-size:14px}.app{height:100vh;display:grid;grid-template-columns:240px minmax(500px,1fr) 360px;overflow:hidden}.sidebar,.rightbar{background:rgba(255,255,255,.72);border-right:1px solid var(--line);overflow:auto}.rightbar{border-right:0;border-left:1px solid var(--line);padding:14px}.brand{height:64px;display:flex;align-items:center;gap:10px;padding:0 18px;font-size:20px;font-weight:800}.wa-icon{width:24px;height:24px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center}.nav{padding:4px 12px}.nav a,.nav div:not(.nav-heading){display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;color:#29323a;text-decoration:none}.nav b{font-size:11px;background:#eaf6ef;color:#08733f;border-radius:999px;min-width:20px;text-align:center;padding:2px 6px}.nav .active{background:var(--green2);color:#08733f;font-weight:700}.nav-heading{padding:16px 4px 6px!important}.focus{border-color:#bbf7d0}.section-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#8a8f98;padding:18px 16px 8px}.conversation{display:grid;grid-template-columns:40px 1fr auto;gap:10px;align-items:center;margin:3px 10px;padding:10px;border-radius:16px;color:inherit;text-decoration:none}.conversation:hover,.conversation.active{background:#fff;box-shadow:0 1px 0 rgba(0,0,0,.04)}.avatar{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;font-weight:800}.av-a{background:#e2f7ee;color:#07704c}.av-b{background:#e5f0ff;color:#185fa5}.av-c{background:#fff0d8;color:#986000}.av-d{background:#f1eaff;color:#6d42be}.av-e{background:#ffe8ed;color:#b42355}.conversation-title{font-weight:800}.conversation-last{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:145px}.conversation-side{text-align:right;font-size:11px;color:var(--muted)}.conversation-side b{display:inline-grid;place-items:center;min-width:20px;height:20px;margin-top:6px;background:var(--green);color:white;border-radius:999px;font-size:11px}.main{display:flex;flex-direction:column;overflow:hidden}.topbar{height:64px;background:rgba(255,255,255,.82);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 20px}.contact-head{display:flex;align-items:center;gap:12px}.name{font-size:18px;font-weight:850}.sub{font-size:12px;color:var(--muted)}.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px}.top-actions{display:flex;gap:10px}.button,.top-actions button,button{border:1px solid var(--line);background:white;color:#111827;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer}.primary{background:var(--green);border-color:var(--green);color:white}.ghost{background:white}.soft{background:var(--green2);color:#0f7a47}.danger{background:var(--red);color:#991b1b}.content{flex:1;display:grid;grid-template-rows:1fr auto;overflow:hidden;background:#fcfbf8}.chat{overflow:auto;padding:22px;background-image:radial-gradient(#e8e5dc 1px, transparent 1px);background-size:22px 22px}.msg-row{display:flex;flex-direction:column;margin:10px 0}.msg-row.out{align-items:flex-end}.bubble{max-width:min(72%,680px);padding:12px 14px;border-radius:18px;line-height:1.45;box-shadow:0 1px 0 rgba(0,0,0,.04)}.bubble.in{background:white;border-bottom-left-radius:6px}.bubble.out{background:var(--green3);border-bottom-right-radius:6px}.msg-meta{font-size:11px;color:var(--muted);margin-top:4px}.composer{background:white;border-top:1px solid var(--line);padding:14px 18px}.ai-strip{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.chip{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;background:#f2f4f7;border:1px solid var(--line);border-radius:999px;font-size:12px;font-weight:750}.tiny{font-size:10px;padding:3px 7px}.reply-card{border:1px solid var(--line);border-radius:18px;background:#fff;box-shadow:var(--shadow);padding:12px}.reply-tabs{display:flex;gap:8px;border-bottom:1px solid var(--line);margin:-2px -2px 12px;padding:0 2px 8px}.tab{padding:8px 10px;border-radius:10px;color:var(--muted);font-weight:800}.tab.active{background:var(--green2);color:#08733f}.reply-text{font-size:16px;line-height:1.45;padding:5px 2px 12px}.reply-actions{display:flex;gap:8px;flex-wrap:wrap}.inline-form{display:inline-flex;gap:6px}.inline-form select,.edit-form input,.control-stack select,.sandbox input,.sandbox select{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px}.edit-form{margin-top:10px;display:flex;gap:8px}.edit-form input{flex:1}.card{background:white;border:1px solid var(--line);border-radius:18px;padding:14px;margin-bottom:12px;box-shadow:0 1px 0 rgba(0,0,0,.03)}.card h3{margin:0 0 12px;font-size:15px}.stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.stat{background:var(--panel2);border-radius:14px;padding:12px}.stat strong{display:block;font-size:23px}.stat span{font-size:12px;color:var(--muted)}.agent-line{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:13px;padding:10px;margin:8px 0}.agent-line strong{flex:1}.agent-line em{font-style:normal;color:var(--muted);font-size:12px}.dot{width:9px;height:9px;border-radius:50%;background:#c8cdd3}.dot.ok{background:var(--green)}.dot.warn{background:#f59e0b}.control-stack{display:grid;gap:8px}.control-stack label{display:grid;gap:5px;color:var(--muted);font-size:12px}.toggle-line{display:flex!important;align-items:center!important;gap:8px!important}.toggle-line-form{margin-top:12px}.switch-label{display:flex;align-items:center;justify-content:space-between;gap:10px}.switch-label input{display:none}.switch-label i{position:relative;width:44px;height:24px;border-radius:99px;background:#ddd}.switch-label i:before{content:"";position:absolute;width:18px;height:18px;background:white;border-radius:50%;left:3px;top:3px;transition:.2s}.switch-label input:checked+i{background:var(--green)}.switch-label input:checked+i:before{transform:translateX(20px)}.bot-step{display:flex;gap:10px;border-left:2px solid #e5e7eb;padding:8px 0 8px 12px;color:var(--muted)}.bot-step span{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:#f2f4f7;font-size:11px}.bot-step.done{border-left-color:var(--green);color:#1f2937}.bot-step.done span{background:var(--green2);color:#06733e}.bot-step.current{border-left-color:#2563eb;color:#1f2937}.bot-step small{display:block;color:var(--muted);margin-top:2px}.event{display:grid;grid-template-columns:45px 1fr;gap:8px;border-top:1px solid var(--line);padding:9px 0}.event:first-child{border-top:0}.event span,.event small{color:var(--muted);font-size:11px}.event strong{font-size:12px}.event.bad strong{color:#b91c1c}.event.warn strong{color:#b45309}.error-line{background:#fff5f5;border:1px solid #fecaca;border-radius:12px;padding:9px;margin:7px 0}.error-line small{display:block;color:#7f1d1d;margin-top:3px}.queue-line{display:flex;gap:8px;border-top:1px solid var(--line);padding:8px 0}.queue-line:first-child{border-top:0}.empty{border:1px dashed #cfd3d9;border-radius:16px;padding:20px;text-align:center;color:var(--muted);background:rgba(255,255,255,.65)}.empty.small{padding:12px;font-size:12px}.small-pad{padding:8px;font-size:12px}.muted{color:var(--muted)}.sandbox{display:grid;gap:8px}.sandbox button{width:100%}.badge-live{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:999px;background:white;padding:8px 11px;font-weight:800}.badge-live.live{color:#08733f}.badge-live.warn{color:#b45309}@media(max-width:1100px){.app{grid-template-columns:210px 1fr}.rightbar{display:none}}@media(max-width:760px){.app{display:block;height:auto}.sidebar{height:auto}.main{height:80vh}.topbar{position:sticky;top:0;z-index:2}.conversation-last{max-width:220px}}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;font-size:14px}.app{height:100vh;display:grid;grid-template-columns:240px minmax(500px,1fr) 360px;overflow:hidden}.sidebar,.rightbar{background:rgba(255,255,255,.72);border-right:1px solid var(--line);overflow:auto}.rightbar{border-right:0;border-left:1px solid var(--line);padding:14px}.brand{height:64px;display:flex;align-items:center;gap:10px;padding:0 18px;font-size:20px;font-weight:800}.wa-icon{width:24px;height:24px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center}.nav{padding:4px 12px}.nav a,.nav div{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;color:#29323a;text-decoration:none}.nav .active{background:var(--green2);color:#08733f;font-weight:700}.section-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#8a8f98;padding:18px 16px 8px}.conversation{display:grid;grid-template-columns:40px 1fr auto;gap:10px;align-items:center;margin:3px 10px;padding:10px;border-radius:16px;color:inherit;text-decoration:none}.conversation:hover,.conversation.active{background:#fff;box-shadow:0 1px 0 rgba(0,0,0,.04)}.avatar{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;font-weight:800}.av-a{background:#e2f7ee;color:#07704c}.av-b{background:#e5f0ff;color:#185fa5}.av-c{background:#fff0d8;color:#986000}.av-d{background:#f1eaff;color:#6d42be}.av-e{background:#ffe8ed;color:#b42355}.conversation-title{font-weight:800}.conversation-last{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:145px}.conversation-side{text-align:right;font-size:11px;color:var(--muted)}.conversation-side b{display:inline-grid;place-items:center;min-width:20px;height:20px;margin-top:6px;background:var(--green);color:white;border-radius:999px;font-size:11px}.main{display:flex;flex-direction:column;overflow:hidden}.topbar{height:64px;background:rgba(255,255,255,.82);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 20px}.contact-head{display:flex;align-items:center;gap:12px}.name{font-size:18px;font-weight:850}.sub{font-size:12px;color:var(--muted)}.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px}.top-actions{display:flex;gap:10px}.button,.top-actions button,button{border:1px solid var(--line);background:white;color:#111827;border-radius:12px;padding:10px 12px;font-weight:800;cursor:pointer}.primary{background:var(--green);border-color:var(--green);color:white}.ghost{background:white}.soft{background:var(--green2);color:#0f7a47}.danger{background:var(--red);color:#991b1b}.content{flex:1;display:grid;grid-template-rows:1fr auto;overflow:hidden;background:#fcfbf8}.chat{overflow:auto;padding:22px;background-image:radial-gradient(#e8e5dc 1px, transparent 1px);background-size:22px 22px}.msg-row{display:flex;flex-direction:column;margin:10px 0}.msg-row.out{align-items:flex-end}.bubble{max-width:min(72%,680px);padding:12px 14px;border-radius:18px;line-height:1.45;box-shadow:0 1px 0 rgba(0,0,0,.04)}.bubble.in{background:white;border-bottom-left-radius:6px}.bubble.out{background:var(--green3);border-bottom-right-radius:6px}.msg-meta{font-size:11px;color:var(--muted);margin-top:4px}.composer{background:white;border-top:1px solid var(--line);padding:14px 18px}.ai-strip{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.chip{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;background:#f2f4f7;border:1px solid var(--line);border-radius:999px;font-size:12px;font-weight:750}.tiny{font-size:10px;padding:3px 7px}.reply-card{border:1px solid var(--line);border-radius:18px;background:#fff;box-shadow:var(--shadow);padding:12px}.reply-tabs{display:flex;gap:8px;border-bottom:1px solid var(--line);margin:-2px -2px 12px;padding:0 2px 8px}.tab{padding:8px 10px;border-radius:10px;color:var(--muted);font-weight:800}.tab.active{background:var(--green2);color:#08733f}.reply-text{font-size:16px;line-height:1.45;padding:5px 2px 12px}.reply-actions{display:flex;gap:8px;flex-wrap:wrap}.inline-form{display:inline-flex;gap:6px}.inline-form select,.edit-form input,.control-stack select,.sandbox input,.sandbox select{border:1px solid var(--line);background:#fff;border-radius:10px;padding:9px}.edit-form{margin-top:10px;display:flex;gap:8px}.edit-form input{flex:1}.card{background:white;border:1px solid var(--line);border-radius:18px;padding:14px;margin-bottom:12px;box-shadow:0 1px 0 rgba(0,0,0,.03)}.card h3{margin:0 0 12px;font-size:15px}.stats-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.stat{background:var(--panel2);border-radius:14px;padding:12px}.stat strong{display:block;font-size:23px}.stat span{font-size:12px;color:var(--muted)}.agent-line{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:13px;padding:10px;margin:8px 0}.agent-line strong{flex:1}.agent-line em{font-style:normal;color:var(--muted);font-size:12px}.dot{width:9px;height:9px;border-radius:50%;background:#c8cdd3}.dot.ok{background:var(--green)}.dot.warn{background:#f59e0b}.control-stack{display:grid;gap:8px}.control-stack label{display:grid;gap:5px;color:var(--muted);font-size:12px}.toggle-line{display:flex!important;align-items:center!important;gap:8px!important}.toggle-line-form{margin-top:12px}.switch-label{display:flex;align-items:center;justify-content:space-between;gap:10px}.switch-label input{display:none}.switch-label i{position:relative;width:44px;height:24px;border-radius:99px;background:#ddd}.switch-label i:before{content:"";position:absolute;width:18px;height:18px;background:white;border-radius:50%;left:3px;top:3px;transition:.2s}.switch-label input:checked+i{background:var(--green)}.switch-label input:checked+i:before{transform:translateX(20px)}.bot-step{display:flex;gap:10px;border-left:2px solid #e5e7eb;padding:8px 0 8px 12px;color:var(--muted)}.bot-step span{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:#f2f4f7;font-size:11px}.bot-step.done{border-left-color:var(--green);color:#1f2937}.bot-step.done span{background:var(--green2);color:#06733e}.bot-step.current{border-left-color:#2563eb;color:#1f2937}.bot-step small{display:block;color:var(--muted);margin-top:2px}.event{display:grid;grid-template-columns:45px 1fr;gap:8px;border-top:1px solid var(--line);padding:9px 0}.event:first-child{border-top:0}.event span,.event small{color:var(--muted);font-size:11px}.event strong{font-size:12px}.event.bad strong{color:#b91c1c}.event.warn strong{color:#b45309}.error-line{background:#fff5f5;border:1px solid #fecaca;border-radius:12px;padding:9px;margin:7px 0}.error-line small{display:block;color:#7f1d1d;margin-top:3px}.queue-line{display:flex;gap:8px;border-top:1px solid var(--line);padding:8px 0}.queue-line:first-child{border-top:0}.empty{border:1px dashed #cfd3d9;border-radius:16px;padding:20px;text-align:center;color:var(--muted);background:rgba(255,255,255,.65)}.empty.small{padding:12px;font-size:12px}.small-pad{padding:8px;font-size:12px}.muted{color:var(--muted)}.sandbox{display:grid;gap:8px}.sandbox button{width:100%}.badge-live{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:999px;background:white;padding:8px 11px;font-weight:800}.badge-live.live{color:#08733f}.badge-live.warn{color:#b45309}@media(max-width:1100px){.app{grid-template-columns:210px 1fr}.rightbar{display:none}}@media(max-width:760px){.app{display:block;height:auto}.sidebar{height:auto}.main{height:80vh}.topbar{position:sticky;top:0;z-index:2}.conversation-last{max-width:220px}}
   </style></head><body><div class="app">
-    <aside class="sidebar"><div class="brand"><span class="wa-icon">↗</span>ReplyWise</div>${sidebarNav}<div class="section-label">${esc(viewLabels[currentView] || 'Conversations')}</div>${conversationList}</aside>
+    <aside class="sidebar"><div class="brand"><span class="wa-icon">↗</span>ReplyWise</div><nav class="nav"><a class="active" href="/">⌂ Dashboard</a><div>💬 All Chats <b style="margin-left:auto">${contacts.length}</b></div><div>⏳ Manual Approval <b style="margin-left:auto">${pendingSuggestions.length}</b></div><div>🤖 Nano Bots</div><div>⚙ Settings</div></nav><div class="section-label">Conversations</div>${conversationList}</aside>
     <main class="main"><header class="topbar"><div class="contact-head"><div class="avatar av-a">${esc(initials(activeName))}</div><div><div class="name">${esc(activeName)}</div><div class="sub"><span class="status-dot"></span>${active ? esc(active.channel || 'whatsapp') : 'waiting'} · ${activeProcessing?.status === 'processing' ? 'Nano Bots processing' : 'ready'}</div></div></div><div class="top-actions"><span id="live-indicator" class="badge-live ${liveAgent ? 'live' : 'warn'}">${liveAgent ? '● Live system' : '● Demo / agent offline'}</span><button onclick="location.reload()">Refresh</button></div></header>
       <section class="content"><div class="chat">${messagesHtml}</div><div class="composer"><div class="ai-strip"><span class="chip">Decision: ${esc(decision.action || 'none')}</span><span class="chip">Confidence ${esc(decision.confidence || 0)}%</span><span class="chip">Warmth ${esc(stats.warmthScore || active?.stats?.warmthScore || 0)}/100</span><span class="chip">Mode ${esc(activeRules.autopilot_mode || 'manual')}</span>${fallbackActive ? '<span class="chip">Nano fallback active</span>' : ''}${optionChips}</div>${decisionPanel}</div></section>
     </main>
-    <aside class="rightbar">${focusCard}<div class="card"><h3>This Week Overview</h3><div class="stats-grid"><div class="stat"><strong>${esc(weekStats.messages || 0)}</strong><span>Messages</span></div><div class="stat"><strong>${esc(weekStats.aiHandledPct || 0)}%</strong><span>AI handled</span></div><div class="stat"><strong>${esc(weekStats.newLeads || 0)}</strong><span>New leads</span></div><div class="stat"><strong>$${Number(costSummary.estimatedCostUsd || 0).toFixed(2)}</strong><span>Est. cost</span></div></div></div>
+    <aside class="rightbar"><div class="card"><h3>This Week Overview</h3><div class="stats-grid"><div class="stat"><strong>${esc(weekStats.messages || 0)}</strong><span>Messages</span></div><div class="stat"><strong>${esc(weekStats.aiHandledPct || 0)}%</strong><span>AI handled</span></div><div class="stat"><strong>${esc(weekStats.newLeads || 0)}</strong><span>New leads</span></div><div class="stat"><strong>$${Number(costSummary.estimatedCostUsd || 0).toFixed(2)}</strong><span>Est. cost</span></div></div></div>
       <div class="card"><h3>AI Agents</h3>${agentsHtml}</div>
       <div class="card"><h3>Contact Control</h3><div class="sub" style="margin-bottom:10px">Stage: ${esc(active?.conversationStage || active?.conversation_stage || 'initial')} · Messages: ${esc(active?.message_count || 0)}</div>${activeRulesForm}</div>
       <div class="card"><h3>Nano Bot Pipeline</h3>${pipelineHtml}<div class="sub" style="margin-top:8px">${esc(activeProcessing?.detail || 'Pipeline is idle.')}</div></div>
