@@ -45,6 +45,17 @@ const WA_TYPE_MAP = {
   multi_vcard: 'vcard',
 };
 
+
+function formatDecisionForLog(decision) {
+  if (!decision) return '?';
+  if (typeof decision === 'string') return decision;
+  const action = decision.action || decision.should_reply || decision.kind || 'unknown';
+  const confidence = decision.confidence != null ? ` ${decision.confidence}%` : '';
+  const risk = decision.risk || decision.risk_level || decision.temperature || '';
+  const reason = decision.reason ? ` — ${String(decision.reason).slice(0, 90)}` : '';
+  return `${action}${confidence}${risk ? ` risk:${risk}` : ''}${reason}`;
+}
+
 function resolveMediaType(msg) {
   if (msg.isGif) return 'gif';
   if (!msg.hasMedia && msg.type === 'chat') return 'text';
@@ -353,10 +364,10 @@ class WhatsAppAgent extends EventEmitter {
           wa_msg_id:     msg.id._serialized,
         }
       );
-      this.log(`✓ Processed — decision: ${result?.decision || '?'} | autoSent: ${result?.autoSent || false}`);
+      this.log(`✓ Processed — decision: ${formatDecisionForLog(result?.decision)} | autoSent: ${result?.autoSent || false}`);
     } catch (err) {
-      const detail = err.response?.data?.error || err.response?.data || '';
-      this.log(`✗ Error processing message: ${err.message}${detail ? ' — ' + JSON.stringify(detail) : ''}`);
+      const serverMessage = err?.response?.data?.error || err?.response?.data?.message || err?.response?.data;
+      this.log(`✗ Error processing message: ${err.message}${serverMessage ? ' — ' + String(serverMessage).slice(0, 180) : ''}`);
     }
   }
 

@@ -40,7 +40,7 @@ function resolveEndpoint(provider) {
 
 function resolveModel(provider) {
   const p = normProvider(provider);
-  if (p === 'gemini')     return process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+  if (p === 'gemini')     return process.env.GEMINI_MODEL || 'gemini-2.0-flash';
   if (p === 'openrouter') return process.env.OPENROUTER_MODEL || 'openrouter/auto';
   if (p === 'groq')       return process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
   if (p === 'openai')     return process.env.OPENAI_MODEL || 'gpt-4o-mini';

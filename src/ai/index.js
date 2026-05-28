@@ -90,26 +90,56 @@ async function autoRoute(input, kind = 'suggestions') {
   return kind === 'summary' ? summarizeProfileLocal(input) : generateSuggestionsLocal(input);
 }
 
+
+function summarizeAiError(err) {
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+  const serverMessage = typeof data === 'string'
+    ? data
+    : (data?.error?.message || data?.message || data?.error || '');
+  return [status ? `HTTP ${status}` : '', err?.message || '', serverMessage ? `— ${String(serverMessage).slice(0, 220)}` : '']
+    .filter(Boolean)
+    .join(' ');
+}
+
 async function generateSuggestions(input) {
   const p = getProvider();
   if (isEasyProvider(p)) return autoRoute(input, 'suggestions');
-  if (p === 'ollama') return generateSuggestionsOllama(input);
-  if (p === 'claude') return generateSuggestionsClaude(input);
-  if (p === 'gemini' || p === 'openrouter' || p === 'groq' || p === 'openai' || p === 'openai_compat' || p === 'lm_studio' || p === 'llamafile') {
-    return generateSuggestionsOpenAICompat(input, { provider: p });
+
+  try {
+    let result;
+    if (p === 'ollama') result = await generateSuggestionsOllama(input);
+    else if (p === 'claude') result = await generateSuggestionsClaude(input);
+    else if (p === 'gemini' || p === 'openrouter' || p === 'groq' || p === 'openai' || p === 'openai_compat' || p === 'lm_studio' || p === 'llamafile') {
+      result = await generateSuggestionsOpenAICompat(input, { provider: p });
+    } else {
+      result = generateSuggestionsLocal(input);
+    }
+    return result;
+  } catch (err) {
+    const summary = summarizeAiError(err);
+    console.warn(`[ai] ${p} failed; Nano Bot local fallback used: ${summary}`);
+    const local = generateSuggestionsLocal(input);
+    return { ...local, provider: `nano-local-fallback-after-${p}`, provider_error: summary };
   }
-  return generateSuggestionsLocal(input);
 }
 
 async function summarizeProfile(input) {
   const p = getProvider();
   if (isEasyProvider(p)) return autoRoute(input, 'summary');
-  if (p === 'ollama') return summarizeProfileOllama(input);
-  if (p === 'claude') return summarizeProfileClaude(input);
-  if (p === 'gemini' || p === 'openrouter' || p === 'groq' || p === 'openai' || p === 'openai_compat' || p === 'lm_studio' || p === 'llamafile') {
-    return summarizeProfileOpenAICompat(input, { provider: p });
+
+  try {
+    if (p === 'ollama') return await summarizeProfileOllama(input);
+    if (p === 'claude') return await summarizeProfileClaude(input);
+    if (p === 'gemini' || p === 'openrouter' || p === 'groq' || p === 'openai' || p === 'openai_compat' || p === 'lm_studio' || p === 'llamafile') {
+      return await summarizeProfileOpenAICompat(input, { provider: p });
+    }
+    return summarizeProfileLocal(input);
+  } catch (err) {
+    const summary = summarizeAiError(err);
+    console.warn(`[ai] ${p} profile summary failed; local fallback used: ${summary}`);
+    return summarizeProfileLocal(input);
   }
-  return summarizeProfileLocal(input);
 }
 
 async function testCurrentProvider() {

@@ -19,6 +19,8 @@ function emptyStore() {
     feedback_events: [],
     cost_log: [],
     automation_events: [],
+    system_events: [],
+    processing_statuses: [],
   };
 }
 
@@ -527,6 +529,90 @@ async function getCostSummary() {
   };
 }
 
+
+async function addSystemEvent({ type = 'info', status = 'info', channel = null, contactId = null, externalContactId = null, title = '', detail = '', meta = {} } = {}) {
+  const store = await readStore();
+  store.system_events = store.system_events || [];
+  const row = {
+    id: uuidv4(),
+    type: String(type || 'info').slice(0, 80),
+    status: String(status || 'info').slice(0, 40),
+    channel: channel ? normalizeChannel(channel) : null,
+    contact_id: contactId || null,
+    external_contact_id: externalContactId || null,
+    title: String(title || '').slice(0, 160),
+    detail: String(detail || '').slice(0, 2000),
+    meta: meta || {},
+    created_at: now(),
+  };
+  store.system_events.push(row);
+  if (store.system_events.length > 300) store.system_events = store.system_events.slice(-300);
+  await writeStore(store);
+  return row;
+}
+
+async function listSystemEvents(limit = 80) {
+  const store = await readStore();
+  return (store.system_events || [])
+    .slice()
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+    .slice(0, Number(limit || 80));
+}
+
+async function setProcessingStatus({ key, channel = null, contactId = null, externalContactId = null, displayName = null, stage = 'received', status = 'processing', detail = '', meta = {} } = {}) {
+  if (!key) return null;
+  const store = await readStore();
+  store.processing_statuses = store.processing_statuses || [];
+  let row = store.processing_statuses.find(x => x.key === key);
+  const ts = now();
+  if (!row) {
+    row = { id: uuidv4(), key, created_at: ts, started_at: ts };
+    store.processing_statuses.push(row);
+  }
+  row.channel = channel ? normalizeChannel(channel) : row.channel || null;
+  row.contact_id = contactId || row.contact_id || null;
+  row.external_contact_id = externalContactId || row.external_contact_id || null;
+  row.display_name = displayName || row.display_name || null;
+  row.stage = String(stage || row.stage || 'received').slice(0, 80);
+  row.status = String(status || 'processing').slice(0, 40);
+  row.detail = String(detail || '').slice(0, 500);
+  row.meta = meta || row.meta || {};
+  row.updated_at = ts;
+  if (row.status === 'processing') row.completed_at = null;
+  if (store.processing_statuses.length > 150) store.processing_statuses = store.processing_statuses.slice(-150);
+  await writeStore(store);
+  return row;
+}
+
+async function clearProcessingStatus(key, { status = 'done', stage = 'complete', detail = '', meta = {} } = {}) {
+  if (!key) return null;
+  const store = await readStore();
+  store.processing_statuses = store.processing_statuses || [];
+  const row = store.processing_statuses.find(x => x.key === key);
+  if (!row) return null;
+  const ts = now();
+  row.status = String(status || 'done').slice(0, 40);
+  row.stage = String(stage || row.stage || 'complete').slice(0, 80);
+  row.detail = String(detail || row.detail || '').slice(0, 500);
+  row.meta = { ...(row.meta || {}), ...(meta || {}) };
+  row.completed_at = ts;
+  row.updated_at = ts;
+  await writeStore(store);
+  return row;
+}
+
+async function listProcessingStatuses(limit = 80) {
+  const store = await readStore();
+  return (store.processing_statuses || [])
+    .slice()
+    .sort((a, b) => String(b.updated_at || b.created_at).localeCompare(String(a.updated_at || a.created_at)))
+    .slice(0, Number(limit || 80));
+}
+
+async function listMessagesForContact(contactId, limit = 80) {
+  return getRecentMessages(contactId, limit);
+}
+
 async function disconnect() {}
 
 module.exports = {
@@ -563,6 +649,12 @@ module.exports = {
   getAgentStatuses,
   countAutoSendsToday,
   getCostSummary,
+  addSystemEvent,
+  listSystemEvents,
+  setProcessingStatus,
+  clearProcessingStatus,
+  listProcessingStatuses,
+  listMessagesForContact,
   disconnect,
   readStore,
   writeStore,
